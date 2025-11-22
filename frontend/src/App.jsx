@@ -5,12 +5,12 @@ import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 
 // Layout
-import Header from './components/layout/Header';
+import Header from './components/layout/Header';   // ❗ BỎ .tsx
 import Sidebar from './components/layout/Sidebar';
 import Footer from './components/layout/Footer';
 
 // Pages
-import Dashboard from './pages/Dashboard';
+import Dashboard from './pages/DashboardPage';
 import Products from './pages/Products';
 import Forecasting from './pages/Forecasting';
 import Analytics from './pages/Analytics';
@@ -18,6 +18,7 @@ import Settings from './pages/Settings';
 
 // Context
 import { AppProvider } from './context/AppContext';
+import { DashboardProvider } from './hooks/useDashboardState';
 
 // Create a client
 const queryClient = new QueryClient({
@@ -35,6 +36,7 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <AppProvider>
         <Router>
+          <DashboardProvider>
           <div className="app">
             <Header />
             <div className="app-container">
@@ -63,6 +65,7 @@ function App() {
               pauseOnHover
             />
           </div>
+          </DashboardProvider>
         </Router>
       </AppProvider>
     </QueryClientProvider>

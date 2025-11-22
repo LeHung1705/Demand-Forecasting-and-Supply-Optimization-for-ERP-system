@@ -1,0 +1,110 @@
+import React from 'react'
+import { Card, CardContent, Grid, Typography, Box, TextField, MenuItem, Button, Stack } from '@mui/material'
+import { useDashboardState } from '../../../hooks/useDashboardState'
+import ReplenishmentModal from './ReplenishmentModal'
+
+function KpiCard({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <Card variant="outlined" sx={{ p: 0, borderRadius: 1, height: 100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <CardContent sx={{ textAlign: 'center' }}>
+        <Typography variant="h5" sx={{ fontWeight: 700 }}>{value}</Typography>
+        <Typography variant="caption" color="text.secondary">{label}</Typography>
+      </CardContent>
+    </Card>
+  )
+}
+
+export default function KPIInventoryPanel() {
+  const { kpis, inventoryInputs, setInventoryInputs, inventoryOutputs, replenishmentOpen, setReplenishmentOpen } = useDashboardState()
+
+  return (
+    <Box>
+      <Grid container spacing={1} sx={{ mb: 2 }}>
+        <Grid item xs={6}><KpiCard label="Observed sum (period)" value={kpis.observedSum ?? '—'} /></Grid>
+        <Grid item xs={6}><KpiCard label="Stockout hours" value={kpis.stockoutHours ?? '—'} /></Grid>
+        <Grid item xs={6}><KpiCard label="Recovered demand" value={kpis.recoveredSum ?? '—'} /></Grid>
+        <Grid item xs={6}><KpiCard label="Forecast next horizon" value={kpis.forecastNextHorizon ?? '—'} /></Grid>
+      </Grid>
+
+      <Card sx={{ borderRadius: 2, boxShadow: 2 }}>
+        <CardContent>
+          <Typography variant="h6" sx={{ fontWeight: 700, mb: 1 }}>Inventory Suggestion</Typography>
+
+          {/* Row 1: Inputs */}
+          <Grid container spacing={2}>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                label="Lead time (hours)"
+                size="small"
+                type="number"
+                fullWidth
+                value={inventoryInputs.leadTimeHours}
+                onChange={e => setInventoryInputs({ ...inventoryInputs, leadTimeHours: Number(e.target.value) })}
+              />
+            </Grid>
+
+            <Grid item xs={12} sm={6}>
+              <TextField
+                select
+                size="small"
+                label="Service level"
+                fullWidth
+                value={inventoryInputs.serviceLevel}
+                onChange={e => setInventoryInputs({ ...inventoryInputs, serviceLevel: Number(e.target.value) as any })}
+              >
+                <MenuItem value={0.9}>0.90</MenuItem>
+                <MenuItem value={0.95}>0.95</MenuItem>
+                <MenuItem value={0.99}>0.99</MenuItem>
+              </TextField>
+            </Grid>
+          </Grid>
+
+          {/* Row 2: Outputs */}
+          <Grid container spacing={2} sx={{ mt: 2 }}>
+            <Grid item xs={6} sm={3}>
+              <Typography variant="caption">Lead-time demand</Typography>
+              <Typography sx={{ fontWeight: 600 }}>{inventoryOutputs.leadTimeDemandMean}</Typography>
+            </Grid>
+            <Grid item xs={6} sm={3}>
+              <Typography variant="caption">Safety stock</Typography>
+              <Typography sx={{ fontWeight: 600 }}>{inventoryOutputs.safetyStock}</Typography>
+            </Grid>
+            <Grid item xs={6} sm={3}>
+              <Typography variant="caption">Reorder Point (ROP)</Typography>
+              <Typography sx={{ fontWeight: 600 }}>{inventoryOutputs.rop}</Typography>
+            </Grid>
+            <Grid item xs={6} sm={3}>
+              <Typography variant="caption">Suggested order qty</Typography>
+              <Typography sx={{ fontWeight: 600 }}>{inventoryOutputs.suggestedOrder}</Typography>
+            </Grid>
+          </Grid>
+
+          {/* Row 3: Buttons aligned right with balanced sizes */}
+          <Grid container sx={{ mt: 2 }}>
+            <Grid item xs={12}>
+              <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
+                <Button
+                  variant="contained"
+                  onClick={() => setReplenishmentOpen(true)}
+                  sx={{ minWidth: 180, height: 40, fontSize: '0.875rem', textTransform: 'none' }}
+                >
+                  Generate Plan
+                </Button>
+
+                <Button
+                  variant="outlined"
+                  onClick={() => console.log('export csv')}
+                  sx={{ minWidth: 160, height: 40, fontSize: '0.875rem', textTransform: 'none' }}
+                >
+                  Export CSV
+                </Button>
+              </Box>
+            </Grid>
+          </Grid>
+        </CardContent>
+      </Card>
+
+      <ReplenishmentModal open={replenishmentOpen} onClose={() => setReplenishmentOpen(false)} />
+    </Box>
+  )
+}
