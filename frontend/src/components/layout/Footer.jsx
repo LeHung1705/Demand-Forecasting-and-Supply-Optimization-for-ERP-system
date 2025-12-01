@@ -1,17 +1,14 @@
+// src/components/layout/Footer.jsx
 import React from 'react';
 import './Footer.css';
 
-const Footer = () => {
-  const currentYear = new Date().getFullYear();
-
+export default function Footer() {
   return (
     <footer className="footer">
       <div className="footer-content">
-        <p>&copy; {currentYear} Demand Forecasting System. All rights reserved.</p>
-        <p>Version {process.env.REACT_APP_VERSION || '1.0.0'}</p>
+        <span>© 2025 FreshRetailNet-50K Forecast Demo</span>
+        <span>ERP mini-project – UIT</span>
       </div>
     </footer>
   );
-};
-
-export default Footer;
+}
