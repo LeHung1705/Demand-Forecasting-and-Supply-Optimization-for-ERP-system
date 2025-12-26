@@ -11,6 +11,7 @@ const Sidebar = () => {
     { path: '/products', label: 'Sản phẩm', icon: '📦' },
     { path: '/forecasting', label: 'Dự báo', icon: '📈' },
     { path: '/analytics', label: 'Phân tích', icon: '📉' },
+    { path: '/planning', label: 'Báo cáo nhu cầu', icon: '🧾' },
     { path: '/settings', label: 'Cài đặt', icon: '⚙️' },
   ];
 

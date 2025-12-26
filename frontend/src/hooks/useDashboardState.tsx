@@ -1,6 +1,11 @@
-import React from 'react'
-import { ChartPoint, generateMockData, computeKpisFromData } from '../utils/mockDashboardData'
+import React, { useCallback, useState } from 'react'
+// Gộp import vào một dòng duy nhất để tránh lỗi
+import { loadDashboardFromApi, loadAccuracyFromApi } from '../services/dashboardApi'
+import type { ChartPoint } from '../utils/mockDashboardData'
 import { InventoryInputs, InventoryOutputs, computeInventoryOutputs } from '../utils/inventory'
+import { computeKpisFromData } from '../utils/mockDashboardData'
+
+type DashboardResult = Awaited<ReturnType<typeof loadDashboardFromApi>>
 
 export type DashboardKpis = {
   observedSum: number
@@ -37,6 +42,9 @@ type State = {
   loading: boolean
   replenishmentOpen: boolean
   setReplenishmentOpen: (v: boolean) => void
+  
+  // ✅ BỔ SUNG BIẾN NÀY ĐỂ TRẢ VỀ CHO DASHBOARD.JSX:
+  accuracyInfo: any 
 }
 
 const DashboardContext = React.createContext<State | undefined>(undefined)
@@ -59,31 +67,68 @@ function useInternalState(): State {
 
   const [loading, setLoading] = React.useState(false)
   const [replenishmentOpen, setReplenishmentOpen] = React.useState(false)
+  
+  // ✅ 2. KHỞI TẠO STATE MỚI CHO ACCURACY
+  const [accuracyInfo, setAccuracyInfo] = React.useState<any>(null)
 
+  // ✅ LOAD DATA: gọi API thật thay vì mock
   const loadData = React.useCallback(async () => {
     setLoading(true)
-    const { loadMockDashboard } = await import('../services/dashboardApi')
-    const res = await loadMockDashboard()
-    setChartData(res.data)
-    setKpis(res.kpis)
-    const meanPerHour = Math.max(1, Math.round((res.kpis.observedSum ?? 0) / Math.max(1, (res.data.length))))
-    const invOut = computeInventoryOutputs(inventoryInputs, meanPerHour)
-    setInventoryOutputs(invOut)
-    setLoading(false)
-  }, [inventoryInputs])
+    try {
+      // Gọi API Dashboard (Trends & KPI)
+      const res = await loadDashboardFromApi({
+        timeRange,
+        aggregation,
+        storeId,
+        sku,
+      })
+
+      setChartData(res.data)
+      setKpis(res.kpis)
+
+      // Tính toán Inventory outputs dựa trên dữ liệu mới
+      const meanPerHour = Math.max(1, Math.round((res.kpis.observedSum ?? 0) / Math.max(1, (res.data.length))))
+      const invOut = computeInventoryOutputs(inventoryInputs, meanPerHour)
+      setInventoryOutputs(invOut)
+
+      // ✅ 3. LOGIC GỌI API ACCURACY
+      // Chỉ gọi khi có SKU (Sản phẩm cụ thể), nếu chọn "All products" thì không tính accuracy
+      if (sku) {
+        try {
+          const accRes = await loadAccuracyFromApi({
+            timeRange,
+            storeId,
+            sku
+          })
+          setAccuracyInfo(accRes)
+          console.log("ACCURACY LOADED:", accRes)
+        } catch (err) {
+          console.warn("Failed to load accuracy:", err)
+          setAccuracyInfo({ available: false, message: "Lỗi tải accuracy" })
+        }
+      } else {
+        // Reset nếu không có SKU
+        setAccuracyInfo(null)
+      }
+
+      console.log('LOAD DATA (API) OK:', { timeRange, aggregation, storeId, sku, points: res.data.length })
+    } catch (e: any) {
+      console.error('LOAD DATA (API) FAIL:', e?.message || e)
+    } finally {
+      setLoading(false)
+    }
+  }, [inventoryInputs, timeRange, aggregation, storeId, sku])
 
   const runRecoveryAndForecast = React.useCallback(() => {
     setChartData(prev => prev.map((p) => {
-      if (p.forecastMean !== undefined) return p
+      if (p.forecastMean !== undefined && p.forecastMean !== null) return p
       const recovered = p.recovered ?? Math.round((p.observed ?? 0) * (1 + Math.random() * 0.3))
       const forecastMean = Math.round((recovered ?? p.observed ?? 0) * (1 + 0.1 * Math.random()))
       return { ...p, recovered, forecastMean, ciLower: Math.max(0, forecastMean - 4), ciUpper: forecastMean + 4 }
     }))
-    // KPIs will update via effect below
   }, [])
 
   React.useEffect(() => {
-    // recompute KPIs from chartData
     setKpis(computeKpisFromData(chartData))
   }, [chartData])
 
@@ -108,6 +153,8 @@ function useInternalState(): State {
     runRecoveryAndForecast,
     loading,
     replenishmentOpen, setReplenishmentOpen,
+    // ✅ 4. TRẢ VỀ BIẾN ACCURACY ĐỂ DASHBOARD SỬ DỤNG
+    accuracyInfo, 
   }
 }
 
@@ -121,4 +168,3 @@ export function useDashboardState() {
   if (!ctx) throw new Error('useDashboardState must be used within DashboardProvider')
   return ctx
 }
-
