@@ -3,7 +3,6 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
-
 // Layout
 import Header from './components/layout/Header';   // ❗ BỎ .tsx
 import Sidebar from './components/layout/Sidebar';
@@ -11,10 +10,11 @@ import Footer from './components/layout/Footer';
 
 // Pages
 import Dashboard from './pages/DashboardPage';
-import Products from './pages/Products';
+import ProductManagement from './pages/ProductManagement';
 import Forecasting from './pages/Forecasting';
 import Analytics from './pages/Analytics';
 import Settings from './pages/Settings';
+import DemandPlanning from './pages/DemandPlanning';
 
 // Context
 import { AppProvider } from './context/AppContext';
@@ -45,9 +45,10 @@ function App() {
                 <Routes>
                   <Route path="/" element={<Navigate to="/dashboard" replace />} />
                   <Route path="/dashboard" element={<Dashboard />} />
-                  <Route path="/products" element={<Products />} />
+                  <Route path="/products" element={<ProductManagement />} />
                   <Route path="/forecasting" element={<Forecasting />} />
                   <Route path="/analytics" element={<Analytics />} />
+                  <Route path="/planning" element={<DemandPlanning />} />
                   <Route path="/settings" element={<Settings />} />
                 </Routes>
               </main>
