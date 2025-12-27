@@ -2,11 +2,15 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.config import settings
+from app.data.csv_store import CsvDuckStore
+
 # Import các router
 from app.routes.analytics import router as analytics_router
 from app.routes.products import router as products_router
-from app.routes.planning import router as planning_router # <--- 1. BỔ SUNG IMPORT NÀY
+from app.routes.planning import router as planning_router
 from app.routes.optimization import router as optimization_router
+
 API_PREFIX = os.getenv("API_PREFIX", "/api/v1")
 
 def create_app() -> FastAPI:
@@ -18,7 +22,8 @@ def create_app() -> FastAPI:
     # Cấu hình CORS
     raw = os.getenv(
         "ALLOWED_ORIGINS",
-        "http://localhost:3000,http://127.0.0.1:3000,http://localhost:8080,http://127.0.0.1:8080",
+        settings.ALLOWED_ORIGINS
+        or "http://localhost:3000,http://127.0.0.1:3000,http://localhost:8080,http://127.0.0.1:8080",
     )
     origins = [o.strip() for o in raw.split(",") if o.strip()]
 
@@ -29,6 +34,10 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.on_event("startup")
+    def _init_csv_store():
+        CsvDuckStore.instance(settings.CSV_PATH, settings.DUCKDB_PATH).init()
 
     # --- ĐĂNG KÝ ROUTER ---
     
