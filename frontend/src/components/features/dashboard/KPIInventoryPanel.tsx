@@ -17,10 +17,16 @@ function KpiCard({ label, value }: { label: string; value: React.ReactNode }) {
 export default function KPIInventoryPanel() {
   const { kpis, inventoryInputs, setInventoryInputs, inventoryOutputs, replenishmentOpen, setReplenishmentOpen } = useDashboardState()
 
+  const format2Decimals = (value: unknown) => {
+    const n = typeof value === 'number' ? value : Number(value)
+    if (!Number.isFinite(n)) return '—'
+    return n.toLocaleString('vi-VN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  }
+
   return (
     <Box>
       <Grid container spacing={1} sx={{ mb: 2 }}>
-        <Grid item xs={6}><KpiCard label="Observed sum (period)" value={kpis.observedSum ?? '—'} /></Grid>
+        <Grid item xs={6}><KpiCard label="Observed sum (period)" value={format2Decimals(kpis.observedSum)} /></Grid>
         <Grid item xs={6}><KpiCard label="Stockout hours" value={kpis.stockoutHours ?? '—'} /></Grid>
         <Grid item xs={6}><KpiCard label="Recovered demand" value={kpis.recoveredSum ?? '—'} /></Grid>
         <Grid item xs={6}><KpiCard label="Forecast next horizon" value={kpis.forecastNextHorizon ?? '—'} /></Grid>

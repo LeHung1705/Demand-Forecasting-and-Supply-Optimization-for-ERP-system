@@ -15,6 +15,7 @@ router = APIRouter(prefix="/products", tags=["products"])
 def api_list_products(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
+    product_id: Optional[int] = None,
     first_category_id: Optional[int] = None,
     second_category_id: Optional[int] = None,
     third_category_id: Optional[int] = None,
@@ -23,6 +24,7 @@ def api_list_products(
 ):
     items, total = list_products(
         db, page, page_size,
+        product_id,
         first_category_id, second_category_id, third_category_id, management_group_id
     )
     return {"items": items, "total": total, "page": page, "page_size": page_size}

@@ -11,12 +11,16 @@ def list_products(
     db: Session,
     page: int = 1,
     page_size: int = 20,
+    product_id: Optional[int] = None,
     first_category_id: Optional[int] = None,
     second_category_id: Optional[int] = None,
     third_category_id: Optional[int] = None,
     management_group_id: Optional[int] = None,
 ) -> Tuple[List[Product], int]:
     q = db.query(Product)
+
+    if product_id is not None:
+        q = q.filter(Product.product_id == product_id)
 
     if first_category_id is not None:
         q = q.filter(Product.first_category_id == first_category_id)

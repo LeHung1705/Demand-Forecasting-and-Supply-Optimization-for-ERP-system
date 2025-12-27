@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routes.analytics import router as analytics_router
 from app.routes.products import router as products_router
 from app.routes.planning import router as planning_router # <--- 1. BỔ SUNG IMPORT NÀY
-
+from app.routes.optimization import router as optimization_router
 API_PREFIX = os.getenv("API_PREFIX", "/api/v1")
 
 def create_app() -> FastAPI:
@@ -45,6 +45,9 @@ def create_app() -> FastAPI:
     # 3. Router Planning (BỔ SUNG VÀO ĐÂY)
     # Kết quả đường dẫn sẽ là: /api/v1/planning/replenishment
     app.include_router(planning_router, prefix=API_PREFIX) # <--- 2. BỔ SUNG DÒNG NÀY
+
+    # 4. Router Optimization (BỔ SUNG VÀO ĐÂY)
+    app.include_router(optimization_router, prefix=API_PREFIX) # <--- 3. BỔ SUNG DÒNG NÀY
 
     # --- ENDPOINTS CƠ BẢN ---
     @app.get("/", tags=["health"])
