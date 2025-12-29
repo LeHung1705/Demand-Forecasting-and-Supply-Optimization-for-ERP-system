@@ -11,7 +11,13 @@ from app.routes.products import router as products_router
 from app.routes.planning import router as planning_router
 from app.routes.optimization import router as optimization_router
 
+# NEW routers
+from app.routes.meta import router as meta_router
+from app.routes.dashboard import router as dashboard_router
+from app.routes.export import router as export_router
+
 API_PREFIX = os.getenv("API_PREFIX", "/api/v1")
+
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -37,10 +43,10 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     def _init_csv_store():
-        CsvDuckStore.instance(settings.CSV_PATH, settings.DUCKDB_PATH).init()
+        CsvDuckStore.instance(settings.CSV_PATH, settings.DUCKDB_PATH, settings.CSV_IMPUTED_PATH).init()
 
     # --- ĐĂNG KÝ ROUTER ---
-    
+
     # 1. Router Analytics
     analytics_prefix = getattr(analytics_router, "prefix", "") or ""
     if analytics_prefix.startswith(API_PREFIX):
@@ -51,12 +57,16 @@ def create_app() -> FastAPI:
     # 2. Router Products
     app.include_router(products_router, prefix=API_PREFIX)
 
-    # 3. Router Planning (BỔ SUNG VÀO ĐÂY)
-    # Kết quả đường dẫn sẽ là: /api/v1/planning/replenishment
-    app.include_router(planning_router, prefix=API_PREFIX) # <--- 2. BỔ SUNG DÒNG NÀY
+    # 3. Router Planning
+    app.include_router(planning_router, prefix=API_PREFIX)
 
-    # 4. Router Optimization (BỔ SUNG VÀO ĐÂY)
-    app.include_router(optimization_router, prefix=API_PREFIX) # <--- 3. BỔ SUNG DÒNG NÀY
+    # 4. Router Optimization
+    app.include_router(optimization_router, prefix=API_PREFIX)
+
+    # 5. NEW: META + DASHBOARD + EXPORT
+    app.include_router(meta_router, prefix=API_PREFIX)
+    app.include_router(dashboard_router, prefix=API_PREFIX)
+    app.include_router(export_router, prefix=API_PREFIX)
 
     # --- ENDPOINTS CƠ BẢN ---
     @app.get("/", tags=["health"])
@@ -68,5 +78,6 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     return app
+
 
 app = create_app()

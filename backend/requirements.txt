@@ -1,55 +1,31 @@
-# =====================================================================
-# Backend Python dependencies (FastAPI + DuckDB)
-#
-# Mục tiêu:
-# - Chạy API tại: http://127.0.0.1:8000/api/v1/...
-# - Backend chạy chế độ CSV-only (không dùng MySQL/SQLAlchemy)
-# - Truy vấn CSV hiệu năng tốt bằng DuckDB (có cache file .duckdb)
-#
-# ---------------------------------------------------------------------
-# CÁCH CHẠY BACKEND (Windows / PowerShell)
-# 1) Vào thư mục backend:
-#    cd d:\FrontendERP\Demand-Forecasting-and-Supply-Optimization-for-ERP-system\backend
-#
-# 2) Tạo virtualenv (chỉ cần 1 lần):
-#    python -m venv venv
-#
-# 3) Kích hoạt venv:
-#    .\venv\Scripts\Activate.ps1
-#
-# 4) Cài dependencies:
-#    python -m pip install -r requirements.txt
-#
-# 5) (Tuỳ chọn) Set đường dẫn CSV / DuckDB cache nếu bạn để data ở chỗ khác:
-#    # Mặc định đã trỏ tới:
-#    # - CSV:    backend/app/data/original_data.csv
-#    # - DuckDB: backend/.cache/app.duckdb
-#    # Nếu muốn override:
-#    $env:CSV_PATH   = "D:\path\to\original_data.csv"
-#    $env:DUCKDB_PATH = "D:\path\to\app.duckdb"
-#
-# 6) Chạy server:
-#    python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-#
-# Ghi chú:
-# - Trên Windows, tránh dùng --reload nếu bạn gặp lỗi lock file DuckDB.
-# - Nếu gặp lỗi thiếu thư viện, đảm bảo bạn đang chạy đúng python trong venv.
-# =====================================================================
-
-# Web framework cho API
-fastapi>=0.104
-
-# ASGI server để chạy FastAPI
-uvicorn[standard]>=0.24
-
-# Data validation (FastAPI dùng Pydantic)
-pydantic>=2.5
-
-# Quản lý settings qua env vars (.env / OS env)
-pydantic-settings>=2.1
-
-# Đọc biến môi trường từ file .env (nếu dự án có dùng)
-python-dotenv>=1.0
-
-# CSV-only mode query engine (truy vấn CSV nhanh, có cache DB file)
-duckdb>=1.1
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.12.0
+click==8.3.1
+colorama==0.4.6
+duckdb==1.4.3
+fastapi==0.127.0
+greenlet==3.3.0
+h11==0.16.0
+httptools==0.7.1
+idna==3.11
+numpy==2.4.0
+pandas==2.3.3
+pydantic==2.12.5
+pydantic-settings==2.12.0
+pydantic_core==2.41.5
+PyMySQL==1.1.2
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.1
+python-multipart==0.0.21
+pytz==2025.2
+PyYAML==6.0.3
+six==1.17.0
+SQLAlchemy==2.0.45
+starlette==0.50.0
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+tzdata==2025.3
+uvicorn==0.40.0
+watchfiles==1.1.1
+websockets==15.0.1

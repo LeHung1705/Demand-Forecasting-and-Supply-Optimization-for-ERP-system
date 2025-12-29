@@ -10,7 +10,7 @@ from app.data.csv_store import CsvDuckStore
 from app.schemas.product import ProductCreate, ProductUpdate
 
 
-_store = CsvDuckStore.instance(settings.CSV_PATH, settings.DUCKDB_PATH)
+_store = CsvDuckStore.instance(settings.CSV_PATH, settings.DUCKDB_PATH, settings.CSV_IMPUTED_PATH)
 
 
 def list_products(

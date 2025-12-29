@@ -6,7 +6,7 @@ from app.config import settings
 from app.data.csv_store import CsvDuckStore
 
 
-_store = CsvDuckStore.instance(settings.CSV_PATH, settings.DUCKDB_PATH)
+_store = CsvDuckStore.instance(settings.CSV_PATH, settings.DUCKDB_PATH, settings.CSV_IMPUTED_PATH)
 
 
 def calculate_optimal_supply(
