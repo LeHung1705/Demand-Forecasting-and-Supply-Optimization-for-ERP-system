@@ -1,327 +1,404 @@
-import React, { useEffect, useState } from 'react';
-import './Dashboard.css';
-import { getReplenishmentPlan } from '../services/planningService';
+import React, { useEffect, useState } from 'react'
+import { getReplenishmentPlan } from '../services/planningApi'
+import { optimizationService } from '../services/optimizationService'
+import * as XLSX from 'xlsx'
+import './Dashboard.css'
 
 const DemandPlanning = () => {
-  const [planData, setPlanData] = useState([]);
-  const [metaData, setMetaData] = useState(null);
-  const [loading, setLoading] = useState(false);
+  // --- STATE ---
+  const [planData, setPlanData] = useState([])
+  const [metaData, setMetaData] = useState(null)
+  const [loading, setLoading] = useState(false)
 
-  const [timeRange, setTimeRange] = useState('30d');
-  const [storeId, setStoreId] = useState('');     // cho phép nhập 0
-  const [productId, setProductId] = useState(''); // ví dụ 4
+  // 1. FILTER CHUNG (Dùng cho cả Basic & Advanced)
+  const [timeRange, setTimeRange] = useState('30d')
+  const [storeId, setStoreId] = useState('')      // Input Store
+  const [productId, setProductId] = useState('')  // <--- MỚI: Input Product
 
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(100);
+  // 2. STATE CHẾ ĐỘ NÂNG CAO (ADVANCED)
+  const [isAdvancedMode, setIsAdvancedMode] = useState(false)
+  const [constraints, setConstraints] = useState({
+    budget: 50000000,
+    max_inventory: 50000000,
+    lead_time: 7,
+  })
+  const [optimizedData, setOptimizedData] = useState(null)
 
-  const loadData = async () => {
-    setLoading(true);
-    try {
-      const res = await getReplenishmentPlan({
-        time_range: timeRange,
-        store_id: storeId,
-        product_id: productId,
-        page,
-        page_size: pageSize,
-      });
+  // Hàm format tiền tệ
+  const formatCurrency = (val) =>
+    new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(Number(val || 0))
 
-      setPlanData(res?.data || []);
-      setMetaData(res?.meta || null);
-    } catch (e) {
-      alert('Lỗi tải dữ liệu phân tích: ' + (e?.message || e));
-    } finally {
-      setLoading(false);
+  const downloadExcel = (rows, fileName, sheetName = 'Data') => {
+    const worksheet = XLSX.utils.json_to_sheet(rows)
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName)
+    const arrayBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' })
+    const blob = new Blob([arrayBuffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = fileName
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    window.URL.revokeObjectURL(url)
+  }
+
+  const handleExportExcel = () => {
+    const today = new Date().toISOString().slice(0, 10)
+
+    if (!isAdvancedMode) {
+      if (!planData || planData.length === 0) {
+        alert('Không có dữ liệu để export. Vui lòng bấm Phân tích trước.')
+        return
+      }
+
+      const rows = planData.map((row) => ({
+        Store_ID: row.store_id,
+        Product_ID: row.product_id,
+        Avg_Daily_Sales: Number(row.avg_daily_sales || 0),
+        Stock_Availability_Hours: Number(row.stock_availability_hours || 0),
+        Risk_Level: row.risk_level,
+        Suggested_Replenishment_Value: Number(row.suggested_replenishment || 0),
+      }))
+
+      downloadExcel(rows, `bao-cao-nhu-cau-basic-${today}.xlsx`, 'Basic')
+      return
     }
-  };
 
-  // auto load khi đổi timeRange
+    if (!optimizedData || !(optimizedData.data || []).length) {
+      alert('Không có dữ liệu tối ưu để export. Vui lòng bấm Chạy Tối ưu trước.')
+      return
+    }
+
+    const rows = (optimizedData.data || []).map((row) => ({
+      Store_ID: row.store_id,
+      Product_ID: row.product_id,
+      Risk_Level: row.risk_level,
+      Optimal_Order_Value: Number(row.optimal_order_value || 0),
+      Selected_Value: Number(row.selected_value || 0),
+      Note: row.note,
+    }))
+
+    downloadExcel(rows, `toi-uu-cung-ung-advanced-${today}.xlsx`, 'Advanced')
+  }
+
+  // Xử lý input số an toàn
+  const getStoreId = () => (storeId && storeId.trim() !== '' ? Number(storeId) : null)
+  const getProductId = () => (productId && productId.trim() !== '' ? Number(productId) : null)
+
+  // --- HÀM 1: LOAD DỮ LIỆU CƠ BẢN (BASIC) ---
+  const loadBasicData = async () => {
+    setLoading(true)
+    try {
+      // Gọi API cũ, truyền thêm productId nếu có
+      // Lưu ý: Bạn cần kiểm tra xem hàm getReplenishmentPlan trong planningApi.js đã hỗ trợ tham số thứ 3 chưa
+      // Nếu chưa, API backend vẫn nhận query params ?product_id=... nên thường sẽ tự động chạy nếu truyền đúng object
+      const sid = getStoreId()
+      const pid = getProductId()
+      
+      // Giả sử hàm getReplenishmentPlan nhận (timeRange, storeId, productId)
+      // Nếu file api của bạn chưa update, hãy sửa lại file planningApi.js một chút hoặc truyền object
+      const res = await getReplenishmentPlan(timeRange, sid, pid) 
+      
+      setPlanData(res.data || [])
+      setMetaData(res.meta || null)
+    } catch (err) {
+      console.error(err)
+      alert('Lỗi tải dữ liệu: ' + (err?.message || 'Kiểm tra lại kết nối'))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // --- HÀM 2: CHẠY TỐI ƯU HÓA (ADVANCED) ---
+  const handleOptimize = async () => {
+    setLoading(true)
+    try {
+      const pid = getProductId()
+      const payload = {
+        time_range: timeRange,
+        store_id: getStoreId(),
+        product_ids: pid ? [pid] : null, // Backend nhận mảng [int], nên nếu có ID thì bỏ vào mảng
+        constraints: {
+          budget: Number(constraints.budget),
+          max_inventory: Number(constraints.max_inventory),
+          lead_time: Number(constraints.lead_time),
+        },
+      }
+      const res = await optimizationService.runSupplyOptimization(payload)
+      setOptimizedData(res)
+    } catch (err) {
+      console.error(err)
+      alert('Lỗi tối ưu hóa: ' + (err?.message || 'Kiểm tra lại API'))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Tự động load lại khi switch chế độ (chỉ load Basic)
   useEffect(() => {
-    setPage(1);
-    // eslint-disable-next-line
-  }, [timeRange]);
-
-  // auto load khi đổi page/pageSize
-  useEffect(() => {
-    loadData();
-    // eslint-disable-next-line
-  }, [page, pageSize]);
-
-  const formatCurrency = (v) =>
-    new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(Number(v || 0));
-
-  const riskBadge = (level) => {
-    if (level === 'high') return <span style={{ color: 'red', fontWeight: 700 }}>⚠️ Nguy cấp</span>;
-    if (level === 'medium') return <span style={{ color: 'orange', fontWeight: 700 }}>⚠️ Cảnh báo</span>;
-    return <span style={{ color: 'green' }}>✅ Ổn định</span>;
-  };
-
-  const totalCount = Number(metaData?.total_count ?? 0);
-  const totalPages = totalCount > 0 ? Math.max(1, Math.ceil(totalCount / Number(pageSize || 1))) : null;
-
-  const handleExportCSV = () => {
-    const headers = [
-      'Store ID',
-      'Product ID',
-      'Avg Daily Sales',
-      'Stock Hours',
-      'Risk Level',
-      'Suggested Budget',
-    ];
-
-    const escapeCSV = (value) => {
-      const str = String(value ?? '');
-      return `"${str.replace(/"/g, '""')}"`;
-    };
-
-    const rows = (planData || []).map((row) => {
-      const cells = [
-        row?.store_id ?? '',
-        row?.product_id ?? '',
-        row?.avg_daily_sales ?? '',
-        row?.stock_availability_hours ?? '',
-        row?.risk_level ?? '',
-        row?.suggested_replenishment ?? '',
-      ];
-      return cells.map(escapeCSV).join(',');
-    });
-
-    const csvString = '\uFEFF' + [headers.map(escapeCSV).join(','), ...rows].join('\r\n');
-    const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
-
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'replenishment_plan.csv';
-
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
+    if (!isAdvancedMode) {
+      // Nếu muốn tự động load khi mở trang thì bỏ comment dòng dưới
+      // loadBasicData() 
+    }
+  }, [isAdvancedMode])
 
   return (
     <div className="dashboard">
-      <div style={{ marginBottom: 16 }}>
-        <h2 className="page-title">Báo cáo phân tích nhu cầu</h2>
-        <p className="text-secondary">
-          Gợi ý nhập hiện tính theo <b>giá trị (sale_amount)</b>. Nếu muốn “số lượng”, cần actual_qty hoặc price.
-        </p>
+      {/* HEADER */}
+      <div style={{ marginBottom: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h2 className="page-title">
+            {isAdvancedMode ? '⚡ Tối ưu hóa Cung ứng (Advanced)' : '📊 Báo cáo Nhu cầu & Rủi ro (Basic)'}
+          </h2>
+          <p style={{ color: '#666', fontSize: '14px' }}>
+            {isAdvancedMode
+              ? 'Thuật toán tự động cân đối ngân sách để chọn ra danh sách nhập hàng hiệu quả nhất.'
+              : 'Xem dữ liệu lịch sử và cảnh báo các mã hàng sắp hết trong kho (Stock < 5h).'}
+          </p>
+        </div>
+
+        <button
+          onClick={() => setIsAdvancedMode(!isAdvancedMode)}
+          style={{
+            padding: '10px 20px',
+            background: isAdvancedMode ? '#673ab7' : '#607d8b',
+            color: 'white',
+            border: 'none',
+            borderRadius: 30,
+            cursor: 'pointer',
+            fontWeight: 'bold',
+            boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+          }}
+        >
+          {isAdvancedMode ? '🔄 Về chế độ Cơ bản' : '🚀 Chuyển sang Tối ưu hóa'}
+        </button>
       </div>
 
-      {/* FILTER */}
+      {/* FILTER CONTROL PANEL */}
       <div className="card" style={{ marginBottom: 20, padding: 20 }}>
-        <div style={{ display: 'flex', gap: 18, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 15, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          
+          {/* 1. Time Range */}
           <div>
-            <label style={{ fontWeight: 700, display: 'block', marginBottom: 6 }}>Phạm vi</label>
-            <select
-              value={timeRange}
-              onChange={(e) => setTimeRange(e.target.value)}
-              style={{ padding: 8, minWidth: 180 }}
+            <label style={{ fontWeight: 'bold', display: 'block', marginBottom: 5 }}>Phạm vi:</label>
+            <select 
+              value={timeRange} 
+              onChange={(e) => setTimeRange(e.target.value)} 
+              style={{ padding: '8px 12px', borderRadius: 4, border: '1px solid #ccc' }}
             >
-              <option value="7d">7 ngày gần nhất</option>
-              <option value="30d">30 ngày gần nhất</option>
-              <option value="90d">90 ngày gần nhất</option>
+              <option value="7d">7 ngày qua</option>
+              <option value="30d">30 ngày qua</option>
+              <option value="90d">90 ngày qua</option>
             </select>
           </div>
 
+          {/* 2. Store ID Input */}
           <div>
-            <label style={{ fontWeight: 700, display: 'block', marginBottom: 6 }}>Store ID</label>
+            <label style={{ fontWeight: 'bold', display: 'block', marginBottom: 5 }}>Store ID:</label>
             <input
               type="number"
-              placeholder="VD: 0"
               value={storeId}
               onChange={(e) => setStoreId(e.target.value)}
-              style={{ padding: 8, width: 120 }}
+              placeholder="All"
+              style={{ padding: '8px 12px', width: 80, borderRadius: 4, border: '1px solid #ccc' }}
             />
           </div>
 
+          {/* 3. Product ID Input (MỚI BỔ SUNG) */}
           <div>
-            <label style={{ fontWeight: 700, display: 'block', marginBottom: 6 }}>Product ID</label>
+            <label style={{ fontWeight: 'bold', display: 'block', marginBottom: 5 }}>Product ID:</label>
             <input
               type="number"
-              placeholder="VD: 4"
               value={productId}
               onChange={(e) => setProductId(e.target.value)}
-              style={{ padding: 8, width: 120 }}
+              placeholder="All"
+              style={{ padding: '8px 12px', width: 80, borderRadius: 4, border: '1px solid #ccc' }}
             />
           </div>
 
-          <button
-            onClick={loadData}
-            style={{
-              padding: '9px 18px',
-              background: '#2196f3',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 6,
-              cursor: 'pointer',
-              fontWeight: 800,
-            }}
-          >
-            🔍 Phân tích ngay
-          </button>
+          {/* NÚT CHẠY LỆNH */}
+          {!isAdvancedMode ? (
+            <>
+              <button
+                onClick={loadBasicData}
+                style={{ 
+                  padding: '9px 25px', background: '#2196f3', color: 'white', 
+                  border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 'bold' 
+                }}
+              >
+                🔍 Phân tích
+              </button>
 
-          <button
-            onClick={handleExportCSV}
-            style={{
-              padding: '9px 18px',
-              background: '#4caf50',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 6,
-              cursor: 'pointer',
-              fontWeight: 800,
-            }}
-          >
-            ⬇️ Export CSV
-          </button>
+              <button
+                onClick={handleExportExcel}
+                disabled={!planData || planData.length === 0}
+                style={{
+                  padding: '9px 18px',
+                  background: (!planData || planData.length === 0) ? '#bdbdbd' : '#2e7d32',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: 4,
+                  cursor: (!planData || planData.length === 0) ? 'not-allowed' : 'pointer',
+                  fontWeight: 'bold',
+                }}
+              >
+                ⬇️ Export Excel
+              </button>
+            </>
+          ) : (
+            // Các input thêm cho chế độ Advanced
+            <>
+              <div style={{borderLeft: '2px solid #ddd', paddingLeft: 15, display: 'flex', gap: 15}}>
+                <div>
+                  <label style={{ fontWeight: 'bold', display: 'block', marginBottom: 5, color: '#673ab7' }}>Ngân sách (VNĐ):</label>
+                  <input
+                    type="number"
+                    value={constraints.budget}
+                    onChange={(e) => setConstraints({ ...constraints, budget: e.target.value })}
+                    style={{ padding: '8px 12px', width: 120, borderRadius: 4, border: '1px solid #673ab7' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontWeight: 'bold', display: 'block', marginBottom: 5, color: '#673ab7' }}>Kho max (Val):</label>
+                  <input
+                    type="number"
+                    value={constraints.max_inventory}
+                    onChange={(e) => setConstraints({ ...constraints, max_inventory: e.target.value })}
+                    style={{ padding: '8px 12px', width: 120, borderRadius: 4, border: '1px solid #673ab7' }}
+                  />
+                </div>
+              </div>
+              
+              <button
+                onClick={handleOptimize}
+                style={{ 
+                  padding: '9px 25px', background: '#673ab7', color: 'white', 
+                  border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 'bold',
+                  boxShadow: '0 2px 4px rgba(103, 58, 183, 0.3)'
+                }}
+              >
+                ⚡ Chạy Tối ưu
+              </button>
+
+              <button
+                onClick={handleExportExcel}
+                disabled={!optimizedData || !(optimizedData.data || []).length}
+                style={{
+                  padding: '9px 18px',
+                  background: (!optimizedData || !(optimizedData.data || []).length) ? '#bdbdbd' : '#2e7d32',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: 4,
+                  cursor: (!optimizedData || !(optimizedData.data || []).length) ? 'not-allowed' : 'pointer',
+                  fontWeight: 'bold',
+                }}
+              >
+                ⬇️ Export Excel
+              </button>
+            </>
+          )}
         </div>
 
-        {/* PAGINATION */}
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 14, flexWrap: 'wrap' }}>
-          <span className="text-secondary" style={{ fontSize: '0.9rem' }}>
-            Trang: <b>{page}</b>
-            {totalPages ? (
-              <> / <b>{totalPages}</b> (total: <b>{totalCount}</b>)</>
-            ) : null}
-          </span>
-
-          <button
-            onClick={() => setPage((p) => Math.max(1, Number(p || 1) - 1))}
-            disabled={loading || page <= 1}
-            style={{
-              padding: '7px 12px',
-              background: '#eee',
-              border: '1px solid #ddd',
-              borderRadius: 6,
-              cursor: loading || page <= 1 ? 'not-allowed' : 'pointer',
-              fontWeight: 700,
-            }}
-          >
-            ◀ Prev
-          </button>
-
-          <button
-            onClick={() => setPage((p) => {
-              const next = Number(p || 1) + 1;
-              if (totalPages) return Math.min(totalPages, next);
-              return next;
-            })}
-            disabled={loading || (totalPages ? page >= totalPages : false)}
-            style={{
-              padding: '7px 12px',
-              background: '#eee',
-              border: '1px solid #ddd',
-              borderRadius: 6,
-              cursor: loading || (totalPages ? page >= totalPages : false) ? 'not-allowed' : 'pointer',
-              fontWeight: 700,
-            }}
-          >
-            Next ▶
-          </button>
-
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <span className="text-secondary" style={{ fontSize: '0.9rem' }}>Rows:</span>
-            <select
-              value={pageSize}
-              onChange={(e) => {
-                setPage(1);
-                setPageSize(Number(e.target.value));
-              }}
-              style={{ padding: 6, minWidth: 100 }}
-            >
-              <option value={25}>25</option>
-              <option value={50}>50</option>
-              <option value={100}>100</option>
-              <option value={200}>200</option>
-            </select>
-          </div>
-        </div>
-
-        {/* META */}
-        {metaData && (
-          <div
-            style={{
-              marginTop: 14,
-              fontSize: '0.9em',
-              color: '#555',
-              background: '#f9f9f9',
-              padding: 10,
-              borderRadius: 6,
-            }}
-          >
-            <b>ℹ️ Range backend:</b> {metaData.from_date} → {metaData.to_date}
-            {metaData?.bounds?.available_days !== undefined && (
-              <> • available_days: <b>{metaData.bounds.available_days}</b></>
-            )}
-            {metaData?.total_count !== undefined && (
-              <> • total: <b>{metaData.total_count}</b></>
-            )}
+        {/* META DATA INFO */}
+        {!isAdvancedMode && metaData && (
+          <div style={{ marginTop: 15, fontSize: '0.9em', color: '#666', background: '#f5f5f5', padding: '8px 15px', borderRadius: 4 }}>
+            📅 Dữ liệu từ: <strong>{metaData.from_date}</strong> đến <strong>{metaData.to_date}</strong> • Số ngày có bán hàng: {metaData.bounds?.available_days}
           </div>
         )}
       </div>
 
-      {/* TABLE */}
+      {/* --- BẢNG KẾT QUẢ --- */}
       <div className="card">
-        {loading ? (
-          <p style={{ padding: 16 }}>Đang tính toán...</p>
-        ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ background: '#f5f5f5', borderBottom: '2px solid #ddd' }}>
-                <th style={{ padding: 12, textAlign: 'left' }}>Store</th>
-                <th style={{ padding: 12, textAlign: 'left' }}>Product</th>
-                <th style={{ padding: 12, textAlign: 'right' }}>Avg/day (Value)</th>
-                <th style={{ padding: 12, textAlign: 'center' }}>Giờ có hàng (6–22)</th>
-                <th style={{ padding: 12, textAlign: 'left' }}>Rủi ro</th>
-                <th style={{ padding: 12, textAlign: 'right' }}>Ngân sách đề xuất (Est. Budget)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {planData.length === 0 ? (
-                <tr>
-                  <td colSpan={6} style={{ padding: 18, textAlign: 'center' }}>
-                    Không có dữ liệu.
-                  </td>
+        {loading && <p style={{ padding: 30, textAlign: 'center', color: '#666' }}>⏳ Đang tính toán dữ liệu...</p>}
+
+        {/* BẢNG BASIC */}
+        {!loading && !isAdvancedMode && (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: '#f8f9fa', borderBottom: '2px solid #e9ecef' }}>
+                  <th style={{ padding: 12, textAlign: 'left' }}>Store</th>
+                  <th style={{ padding: 12, textAlign: 'left' }}>Product</th>
+                  <th style={{ padding: 12, textAlign: 'right' }}>Sức bán TB (Ngày)</th>
+                  <th style={{ padding: 12, textAlign: 'center' }}>Giờ có hàng (6-22h)</th>
+                  <th style={{ padding: 12, textAlign: 'center' }}>Rủi ro</th>
+                  <th style={{ padding: 12, textAlign: 'right' }}>Gợi ý nhập (VNĐ)</th>
                 </tr>
-              ) : (
-                planData.map((row, idx) => (
+              </thead>
+              <tbody>
+                {planData.length === 0 ? (
+                  <tr><td colSpan={6} style={{ padding: 30, textAlign: 'center', color: '#888' }}>Chưa có dữ liệu. Vui lòng bấm Phân tích.</td></tr>
+                ) : (
+                  planData.map((row, idx) => (
+                    <tr key={idx} style={{ borderBottom: '1px solid #eee', backgroundColor: row.risk_level === 'high' ? '#fff5f5' : 'white' }}>
+                      <td style={{ padding: 12 }}>{row.store_id}</td>
+                      <td style={{ padding: 12, fontWeight: 'bold' }}>{row.product_id}</td>
+                      <td style={{ padding: 12, textAlign: 'right' }}>{formatCurrency(row.avg_daily_sales)}</td>
+                      <td style={{ padding: 12, textAlign: 'center' }}>
+                        <span style={{ padding: '4px 8px', borderRadius: 4, background: '#eee' }}>{row.stock_availability_hours}h</span>
+                      </td>
+                      <td style={{ padding: 12, textAlign: 'center' }}>
+                        <span style={{ 
+                          color: row.risk_level === 'high' ? '#d32f2f' : (row.risk_level === 'medium' ? '#f57c00' : '#388e3c'),
+                          fontWeight: 'bold'
+                        }}>
+                          {row.risk_level === 'high' ? 'Nguy cấp' : (row.risk_level === 'medium' ? 'Cảnh báo' : 'Ổn định')}
+                        </span>
+                      </td>
+                      <td style={{ padding: 12, textAlign: 'right', fontWeight: 'bold', color: '#1976d2' }}>
+                        {formatCurrency(row.suggested_replenishment)}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* BẢNG ADVANCED */}
+        {!loading && isAdvancedMode && optimizedData && (
+          <div>
+            <div style={{ padding: 15, background: '#ede7f6', borderBottom: '1px solid #d1c4e9', color: '#512da8', display: 'flex', justifyContent: 'space-between' }}>
+              <span>🎯 <strong>KẾT QUẢ TỐI ƯU:</strong> Đã chọn {optimizedData.items_count} mã hàng</span>
+              <span>Tổng tiền: <b>{formatCurrency(optimizedData.total_selected_value)}</b> (Ngân sách: {formatCurrency(constraints.budget)})</span>
+            </div>
+            
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: '#f3e5f5', borderBottom: '2px solid #e1bee7' }}>
+                  <th style={{ padding: 12, textAlign: 'left' }}>Store</th>
+                  <th style={{ padding: 12, textAlign: 'left' }}>Product</th>
+                  <th style={{ padding: 12, textAlign: 'center' }}>Độ ưu tiên (Risk)</th>
+                  <th style={{ padding: 12, textAlign: 'right' }}>Cần nhập (Optimal)</th>
+                  <th style={{ padding: 12, textAlign: 'right' }}>Được duyệt (Selected)</th>
+                  <th style={{ padding: 12, textAlign: 'left' }}>Ghi chú</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(optimizedData.data || []).map((row, idx) => (
                   <tr key={idx} style={{ borderBottom: '1px solid #eee' }}>
-                    <td style={{ padding: 12 }}>{row.store_id ?? '-'}</td>
-                    <td style={{ padding: 12, fontWeight: 800 }}>{row.product_id}</td>
-
-                    <td style={{ padding: 12, textAlign: 'right' }}>
-                      {formatCurrency(row.avg_daily_sales)}
+                    <td style={{ padding: 12 }}>{row.store_id}</td>
+                    <td style={{ padding: 12, fontWeight: 'bold' }}>{row.product_id}</td>
+                    <td style={{ padding: 12, textAlign: 'center' }}>{row.risk_level}</td>
+                    <td style={{ padding: 12, textAlign: 'right', color: '#888' }}>{formatCurrency(row.optimal_order_value)}</td>
+                    <td style={{ padding: 12, textAlign: 'right', fontWeight: 'bold', color: '#673ab7', fontSize: '1.1em' }}>
+                      {formatCurrency(row.selected_value)}
                     </td>
-
-                    <td style={{ padding: 12, textAlign: 'center' }}>
-                      <span
-                        style={{
-                          padding: '4px 10px',
-                          borderRadius: 999,
-                          fontWeight: 800,
-                          background: row.stock_availability_hours < 5 ? '#ffebee' : '#e8f5e9',
-                          color: row.stock_availability_hours < 5 ? '#c62828' : '#2e7d32',
-                        }}
-                      >
-                        {row.stock_availability_hours}h
-                      </span>
-                    </td>
-
-                    <td style={{ padding: 12 }}>{riskBadge(row.risk_level)}</td>
-
-                    <td style={{ padding: 12, textAlign: 'right', fontWeight: 900, color: '#1976d2' }}>
-                      {row.suggested_replenishment > 0 ? formatCurrency(row.suggested_replenishment) : '-'}
-                    </td>
+                    <td style={{ padding: 12, color: '#e65100', fontStyle: 'italic' }}>{row.note}</td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>
-  );
-};
+  )
+}
 
-export default DemandPlanning;
+export default DemandPlanning

@@ -105,3 +105,12 @@ config/local.py
 *.bak
 *.swp
 .~lock.*
+
+# Database files
+*.duckdb
+*.db
+*.sqlite3
+
+# Cache folders
+backend/.cache/
+__pycache__/

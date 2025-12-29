@@ -1,9 +1,7 @@
 # app/routes/planning.py
 from typing import Optional
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from fastapi import APIRouter
 
-from app.database import get_db
 from app.services.planning_service import generate_replenishment_plan
 
 router = APIRouter(prefix="/planning", tags=["planning"])
@@ -15,10 +13,8 @@ def api_replenishment_plan(
     product_id: Optional[int] = None,
     page: int = 1,
     page_size: int = 100,
-    db: Session = Depends(get_db),
 ):
     return generate_replenishment_plan(
-        db=db,
         time_range=time_range,
         store_id=store_id,
         product_id=product_id,
