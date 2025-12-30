@@ -34,7 +34,6 @@ print(f"DEBUG: Data Path: {DATA_PATH}")
 print(f"DEBUG: Checkpoint Base Path: {CKPT_BASE_PATH}")
 
 def get_forecast_data(data: pd.DataFrame, start_day: int, month: int, year: int, days_ahead: int = 7, use_decoder=True) -> pd.DataFrame:
-    # forecast_data = data[(data['store_id'] == store_id) & (data['product_id'] == product_id) ].copy()
     forecast_data = data.copy()
     identity = forecast_data[['store_id', 'product_id']].drop_duplicates().reset_index(drop=True)
     forecast_data['dt'] = pd.to_datetime(forecast_data['dt'])
@@ -56,7 +55,6 @@ def get_forecast_data(data: pd.DataFrame, start_day: int, month: int, year: int,
 
 
 def get_torch_forecast_data(forecast_data, use_decoder=True):
-    # arguments
     series_num = 50000
     horizon = 37 if use_decoder else 30
     window_size = 30 * 16
@@ -113,7 +111,6 @@ def get_torch_forecast_data(forecast_data, use_decoder=True):
         axis=-1
     )
     ds = ds.reshape(series_num, horizon * 16, -1)
-    # ds = ds.squeeze(0)
 
     n_features = ds.shape[-1] - 1
 
@@ -143,6 +140,33 @@ class Config:
 
 def main(args):
     data = pd.read_csv(DATA_PATH)
+    if args.discount_override is not None:
+        data['dt'] = pd.to_datetime(data['dt'])
+        current_date = pd.Timestamp(year=args.year, month=args.month, day=args.start_day)
+        max_data_dt = data['dt'].max()
+        req_end_date = current_date + pd.Timedelta(days=7)
+        
+        if max_data_dt < req_end_date:
+            print(f"Extending data from {max_data_dt} to {req_end_date} for simulation...")
+            last_day_snapshot = data[data['dt'] == max_data_dt].copy()
+            
+            new_frames = []
+            curr = max_data_dt + pd.Timedelta(days=1)
+            while curr < req_end_date: 
+                snapshot = last_day_snapshot.copy()
+                snapshot['dt'] = curr
+                snapshot['sale_amount'] = 0
+                new_frames.append(snapshot)
+                curr += pd.Timedelta(days=1)
+            
+            if new_frames:
+                data = pd.concat([data] + new_frames, ignore_index=True)
+                data = data.sort_values(['store_id', 'product_id', 'dt'])
+                print(f"Appended {len(new_frames)} days of dummy data for all products.")
+
+    # Determine if we need decoder data structure (either explicitly requested OR implied by simulation)
+    # If simulation is active (discount_override), we MUST have future data structure.
+    need_decoder_data = args.use_decoder or (args.discount_override is not None)
 
     forecast_data, start_date, final_forecast = get_forecast_data(
         data,
@@ -150,8 +174,18 @@ def main(args):
         month=args.month,
         year=args.year,
         days_ahead=7,
-        use_decoder=args.use_decoder,
+        use_decoder=need_decoder_data
     )
+
+    # 2. Apply Override
+    if args.discount_override is not None:
+        print(f"Overriding discount with: {args.discount_override} for future window")
+        # Only override FUTURE dates (>= start_date)
+        mask = forecast_data['dt'] >= start_date
+        forecast_data.loc[mask, 'discount'] = float(args.discount_override)
+        
+        # If we simulate, we MUST use decoder to let the model see the feature
+        args.use_decoder = True 
 
     x, x_dec, _ = get_torch_forecast_data(forecast_data, use_decoder=args.use_decoder)
 
@@ -161,12 +195,12 @@ def main(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
     
-    current_ckpt_path = os.path.join(CKPT_BASE_PATH, "imputed_decoder", "best_dlinear_model.pth")
-    if not args.use_decoder:
-        current_ckpt_path = os.path.join(CKPT_BASE_PATH, "imputed_no_decoder", "best_dlinear_model.pth")
-    
-    print(f"Loading checkpoint from: {current_ckpt_path}")
-    state_dict = torch.load(current_ckpt_path, map_location=device)
+    ckpt_key = 'decoder' if args.use_decoder else 'no_decoder'
+    CKPT_PATH_LOCAL = CKPT_PATH.replace('decoder', ckpt_key)
+    if not args.use_decoder and 'imputed_decoder' in CKPT_PATH and 'imputed_no_decoder' not in CKPT_PATH_LOCAL:
+         CKPT_PATH_LOCAL = CKPT_PATH.replace('imputed_decoder', 'imputed_no_decoder')
+
+    state_dict = torch.load(CKPT_PATH_LOCAL, map_location=device)
     model.load_state_dict(state_dict)
     model.eval()
 
@@ -179,21 +213,27 @@ def main(args):
             output = output[:, :, -1:]
 
     y_pred_hourly = output.squeeze(-1).cpu().numpy()
-    y_pred_daily = y_pred_hourly.reshape(50000, 16, -1).sum(axis=1)
+    y_pred_daily = y_pred_hourly.reshape(50000, 7, 16).sum(axis=2)
 
     final_forecast['hourly_forecast'] = list(y_pred_hourly)
     final_forecast['daily_forecast'] = list(y_pred_daily)
 
     str_time = start_date.strftime('%Y%m%d')
     output_path = OUTPUT_PATH
-    for fname in os.listdir(output_path):
-        if fname.startswith("forecast_data_") and fname.endswith(".csv"):
-            file_path = os.path.join(output_path, fname)
-            os.remove(file_path)
-            print(f"Deleted: {file_path}")
+    
+    if args.output_filename:
+        out_filename = args.output_filename
+    else:
+        out_filename = f'final_forecast_{str_time}.csv'
+        for fname in os.listdir(output_path):
+            if fname.startswith("final_forecast_") and fname.endswith(".csv"):
+                file_path = os.path.join(output_path, fname)
+                os.remove(file_path)
+                print(f"Deleted: {file_path}")
 
-    final_forecast.to_csv(os.path.join(output_path, f'final_forecast_{str_time}.csv'), index=False)
-    print(f"Saved forecast to final_forecast_{str_time}.csv")
+    save_path = os.path.join(output_path, out_filename)
+    final_forecast.to_csv(save_path, index=False)
+    print(f"Saved forecast to {out_filename}")
 
 
 if __name__ == "__main__":
@@ -206,6 +246,9 @@ if __name__ == "__main__":
     parser.add_argument("--use_decoder", action="store_true")
     parser.add_argument("--no_decoder", action="store_false", dest="use_decoder")
     parser.set_defaults(use_decoder=True)
+    
+    parser.add_argument("--discount_override", type=float, default=None, help="Override discount for simulation")
+    parser.add_argument("--output_filename", type=str, default=None, help="Specific filename for output")
 
     args = parser.parse_args()
     main(args)

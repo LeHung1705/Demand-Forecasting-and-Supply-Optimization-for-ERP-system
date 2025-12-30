@@ -50,6 +50,20 @@ def _run_forecast_job(today: date):
         check=True,
     )
 
+import numpy as np
+
+def _parse_forecast_str(s: Any) -> np.ndarray:
+    """Parses string '[1.0 2.0 ...]' into a numpy array."""
+    try:
+        val = str(s).strip()
+        if val.startswith('[') and val.endswith(']'):
+            val = val[1:-1]
+        # Split by whitespace or comma
+        parts = val.replace(',', ' ').split()
+        return np.array([float(x) for x in parts if x], dtype=float)
+    except Exception:
+        return np.array([], dtype=float)
+
 def _load_daily_forecast_from_csv(
     csv_path: str,
     store_id: int | None,
@@ -57,9 +71,7 @@ def _load_daily_forecast_from_csv(
     base_day: date,
 ) -> list[dict]:
     df = pd.read_csv(csv_path)
-    # df['hourly_forecast'] = df['hourly_forecast'].map(lambda x: x[1:-1].split())
-    df['daily_forecast'] = df['daily_forecast'].map(lambda x: x[1:-1].split())
-
+    
     if store_id is not None:
         df = df[df["store_id"] == store_id]
     if product_id is not None:
@@ -68,11 +80,26 @@ def _load_daily_forecast_from_csv(
     if df.empty:
         return []
 
-    daily = [float(v) for v in df.iloc[0]["daily_forecast"]]
+    # Parse and Sum all matching rows
+    total_forecast = None
+    
+    for val in df["daily_forecast"]:
+        arr = _parse_forecast_str(val)
+        if len(arr) == 0: continue
+        
+        if total_forecast is None:
+            total_forecast = arr
+        else:
+            # Ensure lengths match before adding (truncate to min length if mismatch)
+            min_len = min(len(total_forecast), len(arr))
+            total_forecast = total_forecast[:min_len] + arr[:min_len]
+
+    if total_forecast is None:
+        return []
 
     return [
         {"dt": str(base_day + timedelta(days=i + 1)), "value": _r2(v)}
-        for i, v in enumerate(daily)
+        for i, v in enumerate(total_forecast)
     ]
 
 
@@ -83,9 +110,6 @@ def _load_hourly_forecast_from_csv(
     base_day: date,
 ) -> list[dict]:
     df = pd.read_csv(csv_path)
-    df["hourly_forecast"] = df["hourly_forecast"].map(
-        lambda x: x[1:-1].replace(",", "").split()
-    )
 
     if store_id is not None:
         df = df[df["store_id"] == store_id]
@@ -95,15 +119,37 @@ def _load_hourly_forecast_from_csv(
     if df.empty:
         return []
 
-    hourly = [float(v) for v in df.iloc[0]["hourly_forecast"]]
+    # Parse and Sum all matching rows
+    total_forecast = None
+    row_count = 0
+    
+    for val in df["hourly_forecast"]:
+        arr = _parse_forecast_str(val)
+        if len(arr) == 0: continue
+        
+        row_count += 1
+        if total_forecast is None:
+            total_forecast = arr
+        else:
+            min_len = min(len(total_forecast), len(arr))
+            total_forecast = total_forecast[:min_len] + arr[:min_len]
+
+    if total_forecast is None:
+        return []
+    
+    # Debug logging
+    print(f"Hourly Forecast Aggregation: Processed {row_count} rows. Total Sum: {np.sum(total_forecast)}")
+    print(f"First 5 hourly values: {total_forecast[:5]}")
 
     out = []
     idx = 0
+    # Assuming standard 7 days horizon logic mapping (16 hours/day)
     for d in range(7):
         day = base_day + timedelta(days=d + 1)
         for h in range(16):  # 6h → 21h
+            if idx >= len(total_forecast): break
             ts = datetime.combine(day, time(hour=6 + h))
-            out.append({"dt": ts.isoformat(), "value": _r2(hourly[idx])})
+            out.append({"dt": ts.isoformat(), "value": _r2(total_forecast[idx])})
             idx += 1
 
     return out
