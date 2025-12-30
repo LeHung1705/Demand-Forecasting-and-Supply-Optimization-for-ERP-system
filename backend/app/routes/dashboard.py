@@ -1,8 +1,9 @@
 from __future__ import annotations
+import pandas as pd
 
 from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, List, Optional
-
+import os
 from fastapi import APIRouter, HTTPException, Query
 
 from app.config import settings
@@ -13,12 +14,100 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 _store = CsvDuckStore.instance(settings.CSV_PATH, settings.DUCKDB_PATH, settings.CSV_IMPUTED_PATH)
 _DAYS = {"7d": 7, "30d": 30, "90d": 90}
 
+FORECAST_DIR = settings.DATA_PATH  # trỏ đúng thư mục chứa forecast_data
+INFERENCE_DF_SH = settings.INFERENCE_DF_SH
+
 
 def _r2(x: Any) -> float:
     try:
         return round(float(x or 0.0), 2)
     except Exception:
         return 0.0
+
+
+def _find_today_forecast_file(today: date) -> str | None:
+    today_str = today.strftime("%Y%m%d")
+
+    for fname in os.listdir(FORECAST_DIR):
+        if fname.startswith("final_forecast_") and fname.endswith(".csv"):
+            if today_str in fname:
+                return os.path.join(FORECAST_DIR, fname)
+    return None
+
+import subprocess
+
+
+def _run_forecast_job(today: date):
+    subprocess.run(
+        [
+            "bash",
+            INFERENCE_DF_SH,
+            str(today.day),
+            str(today.month),
+            str(today.year),
+            '--no_decoder',
+        ],
+        check=True,
+    )
+
+def _load_daily_forecast_from_csv(
+    csv_path: str,
+    store_id: int | None,
+    product_id: int | None,
+    base_day: date,
+) -> list[dict]:
+    df = pd.read_csv(csv_path)
+    # df['hourly_forecast'] = df['hourly_forecast'].map(lambda x: x[1:-1].split())
+    df['daily_forecast'] = df['daily_forecast'].map(lambda x: x[1:-1].split())
+
+    if store_id is not None:
+        df = df[df["store_id"] == store_id]
+    if product_id is not None:
+        df = df[df["product_id"] == product_id]
+
+    if df.empty:
+        return []
+
+    daily = [float(v) for v in df.iloc[0]["daily_forecast"]]
+
+    return [
+        {"dt": str(base_day + timedelta(days=i + 1)), "value": _r2(v)}
+        for i, v in enumerate(daily)
+    ]
+
+
+def _load_hourly_forecast_from_csv(
+    csv_path: str,
+    store_id: int | None,
+    product_id: int | None,
+    base_day: date,
+) -> list[dict]:
+    df = pd.read_csv(csv_path)
+    df["hourly_forecast"] = df["hourly_forecast"].map(
+        lambda x: x[1:-1].replace(",", "").split()
+    )
+
+    if store_id is not None:
+        df = df[df["store_id"] == store_id]
+    if product_id is not None:
+        df = df[df["product_id"] == product_id]
+
+    if df.empty:
+        return []
+
+    hourly = [float(v) for v in df.iloc[0]["hourly_forecast"]]
+
+    out = []
+    idx = 0
+    for d in range(7):
+        day = base_day + timedelta(days=d + 1)
+        for h in range(16):  # 6h → 21h
+            ts = datetime.combine(day, time(hour=6 + h))
+            out.append({"dt": ts.isoformat(), "value": _r2(hourly[idx])})
+            idx += 1
+
+    return out
+
 
 
 def _daily_sum(
@@ -71,35 +160,6 @@ def _expand_daily_to_hourly(daily_rows: List[Dict[str, Any]]) -> List[Dict[str, 
             out.append({"dt": ts.isoformat(), "value": per_hour})
     return out
 
-
-def _dummy_forecast_daily(observed: List[Dict[str, Any]], last_day: date, horizon_days: int = 7) -> List[Dict[str, Any]]:
-    tail = observed[-7:] if observed else []
-    vals = [float(p.get("value") or 0.0) for p in tail]
-    base = (sum(vals) / len(vals)) if vals else 0.0
-    base = _r2(base)
-
-    return [{"dt": str(last_day + timedelta(days=i)), "value": base} for i in range(1, horizon_days + 1)]
-
-
-def _dummy_forecast_hourly(
-    observed: List[Dict[str, Any]],
-    last_ts: datetime,
-    horizon_days: int = 7,
-) -> List[Dict[str, Any]]:
-    horizon_points = horizon_days * 24
-
-    tail = observed[-24:] if observed else []
-    vals = [float(p.get("value") or 0.0) for p in tail]
-    base = (sum(vals) / len(vals)) if vals else 0.0
-    base = _r2(base)
-
-    out: List[Dict[str, Any]] = []
-    for i in range(1, horizon_points + 1):
-        ts = last_ts + timedelta(hours=i)
-        out.append({"dt": ts.isoformat(), "value": base})
-    return out
-
-
 @router.get("/series")
 def get_dashboard_series(
     time_range: str = Query("30d", pattern="^(7d|30d|90d)$"),
@@ -148,10 +208,19 @@ def get_dashboard_series(
     observed_daily_rows = _daily_sum("sales_original", from_date, to_date, store_id, product_id)
     recovered_daily_rows = _daily_sum("sales_imputed", from_date, to_date, store_id, product_id)
 
+    forecast_base_day = max_dt
+    forecast_file = _find_today_forecast_file(forecast_base_day)
+
+    if forecast_file is None:
+        _run_forecast_job(forecast_base_day)
+        forecast_file = _find_today_forecast_file(forecast_base_day)
+
     if aggregation == "daily":
         observed = [{"dt": str(p["dt"]), "value": _r2(p["value"])} for p in observed_daily_rows]
         recovered = [{"dt": str(p["dt"]), "value": _r2(p["value"])} for p in recovered_daily_rows]
-        forecast = _dummy_forecast_daily(observed, last_day=to_date, horizon_days=7)
+
+        forecast = _load_daily_forecast_from_csv(forecast_file, store_id, product_id, base_day=forecast_base_day)
+        print(forecast)
 
         return {
             "meta": {
@@ -181,7 +250,13 @@ def get_dashboard_series(
     else:
         last_hist_ts = datetime.combine(to_date, time(hour=23))
 
-    forecast_hourly = _dummy_forecast_hourly(observed_hourly_rows, last_ts=last_hist_ts, horizon_days=7)
+    forecast_hourly = _load_hourly_forecast_from_csv(
+        forecast_file,
+        store_id,
+        product_id,
+        base_day=max_dt,
+    )
+
 
     return {
         "meta": {

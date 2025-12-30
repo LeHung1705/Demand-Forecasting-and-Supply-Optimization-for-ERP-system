@@ -20,6 +20,10 @@ class Settings(BaseSettings):
 
     DUCKDB_PATH: str = os.getenv("DUCKDB_PATH", os.path.join(_BACKEND_DIR, ".cache", "app.duckdb"))
 
+    DATA_PATH: str = '/home/quang_ai/Demand-Forecasting-and-Supply-Optimization-for-ERP-system/backend/app/data'
+
+    INFERENCE_DF_SH: str = '/home/quang_ai/Demand-Forecasting-and-Supply-Optimization-for-ERP-system/ai/demand_forecasting/inference_dlinear.sh'
+
     class Config:
         case_sensitive = True
 

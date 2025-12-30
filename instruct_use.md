@@ -12,12 +12,12 @@ cd frontend
 npm install
 ```
 
-### Chạy Frontend
+### Chạy Backend
 ```bash
 cd backend
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
-### Chạy Backend
+### Chạy Frontend
 ```bash
 cd frontend
 npm start
