@@ -113,7 +113,12 @@ export default function ExportReportModal({ open, onClose }: Props) {
       const blob = await res.blob()
       const cd = res.headers.get('content-disposition') || ''
       const m = /filename="?([^"]+)"?/i.exec(cd)
-      const filename = m?.[1] || 'report.csv'
+      let filename = m?.[1] || 'report.csv'
+      
+      // If backend returns a zip type but filename wasn't parsed correctly, force .zip
+      if (res.headers.get('content-type')?.includes('zip') && !filename.endsWith('.zip')) {
+          filename = 'Optimization_Report.zip'
+      }
 
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -203,8 +208,6 @@ export default function ExportReportModal({ open, onClose }: Props) {
             fullWidth
           >
             <MenuItem value="forecast_only">Forecast</MenuItem>
-            <MenuItem value="train_df_then_forecast">Training DF + Forecast</MenuItem>
-            <MenuItem value="train_ldr_then_train_df_then_forecast">Training LDR + Training DF + Forecast</MenuItem>
             <MenuItem value="adaptive_recommend">Adaptive (recommend)</MenuItem>
           </TextField>
         </Stack>
@@ -220,7 +223,7 @@ export default function ExportReportModal({ open, onClose }: Props) {
               <CircularProgress size={18} sx={{ mr: 1 }} /> Downloading...
             </>
           ) : (
-            'Download CSV'
+            'Download Report'
           )}
         </Button>
       </DialogActions>

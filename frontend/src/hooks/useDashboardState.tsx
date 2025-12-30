@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { loadDashboardFromApi, loadAccuracyFromApi } from '../services/dashboardApi'
+import { loadAccuracyFromApi } from '../services/dashboardApi'
 import { computeKpisFromData, type ChartPoint } from '../utils/mockDashboardData'
 import { computeInventoryOutputs, type InventoryInputs, type InventoryOutputs } from '../utils/inventory'
 import { APP_CONFIG } from '../utils/constants'
@@ -67,80 +67,6 @@ function toNullableInt(v: string | undefined): number | null {
 function toEpochMs(s: any): number | null {
   const t = Date.parse(String(s))
   return Number.isFinite(t) ? t : null
-}
-
-function makeMockForecast(opts: {
-  history: ChartPoint[]
-  aggregation: 'hourly' | 'daily'
-  horizonDays?: number
-}): {
-  historyBridged: ChartPoint[]
-  forecast: ChartPoint[]
-  lastHistory: { iso: string; ts: number; year: number; month: number; day: number }
-} {
-  const horizonDays = opts.horizonDays ?? 7
-  const hist = (opts.history || [])
-    .map((p) => ({ ...p, isForecast: false }))
-    .filter((p) => toEpochMs(p.time) !== null)
-    .sort((a, b) => (toEpochMs(a.time)! - toEpochMs(b.time)!))
-
-  if (hist.length === 0) {
-    return {
-      historyBridged: hist,
-      forecast: [],
-      lastHistory: { iso: '', ts: 0, year: 0, month: 0, day: 0 },
-    }
-  }
-
-  const last = hist[hist.length - 1]             // ✅ đây chính là điểm lịch sử gần nhất (last_dt)
-  const lastTs = toEpochMs(last.time)!           // ✅ timestamp của last_dt
-
-  // ✅ Trích xuất ngày/tháng/năm của last_dt để sau truyền cho AI
-  const lastDate = new Date(lastTs)
-  const lastHistory = {
-    iso: new Date(lastTs).toISOString(),
-    ts: lastTs,
-    year: lastDate.getFullYear(),
-    month: lastDate.getMonth() + 1, // 1-12
-    day: lastDate.getDate(),        // 1-31
-  }
-
-  const stepMs = opts.aggregation === 'hourly' ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000
-  const steps = opts.aggregation === 'hourly' ? horizonDays * 24 : horizonDays
-
-  const lastObserved = Number(last.observed ?? 0) || 0
-
-  const historyBridged = hist.slice(0, -1).concat([
-    {
-      ...last,
-      forecastMean: lastObserved,
-      ciLower: null,
-      ciUpper: null,
-      isForecast: false,
-    },
-  ])
-
-  const forecast: ChartPoint[] = []
-  const base = Math.max(0, lastObserved)
-
-  for (let i = 1; i <= steps; i++) {
-    const ts = lastTs + i * stepMs
-    const mean = Math.max(0, Math.round(base * (0.95 + 0.1 * Math.sin(i / 3)) + (Math.random() - 0.5) * 2))
-    const band = Math.max(1, Math.round(mean * 0.2))
-
-    forecast.push({
-      time: new Date(ts).toISOString(),
-      observed: null,
-      recovered: null,
-      forecastMean: mean,
-      ciLower: Math.max(0, mean - band),
-      ciUpper: mean + band,
-      stockout: false,
-      isForecast: true,
-    })
-  }
-
-  return { historyBridged, forecast, lastHistory }
 }
 
 function mergeSorted(points: ChartPoint[]): ChartPoint[] {
@@ -261,22 +187,68 @@ function useInternalState(): State {
         .filter((x) => toEpochMs(x.time) !== null)
         .sort((a, b) => (toEpochMs(a.time)! - toEpochMs(b.time)!))
 
-      setHistoryData(history)
+      // Determine last history date for AI metadata
+      let lastHistoryData = { iso: '', ts: 0, year: 0, month: 0, day: 0 }
+      if (history.length > 0) {
+        const last = history[history.length - 1]
+        const lastTs = toEpochMs(last.time)!
+        const lastDate = new Date(lastTs)
+        lastHistoryData = {
+          iso: new Date(lastTs).toISOString(),
+          ts: lastTs,
+          year: lastDate.getFullYear(),
+          month: lastDate.getMonth() + 1,
+          day: lastDate.getDate(),
+        }
+      }
 
-      // ✅ Make mock forecast AFTER last history point, with bridge
-      const { historyBridged, forecast, lastHistory } = makeMockForecast({
-        history,
-        aggregation,
-        horizonDays: 7,
-      })
+      // Check if backend provided forecast
+      const backendForecast = json?.forecast || []
+      let finalForecast: ChartPoint[] = []
+      let historyFinal = history
 
-      setHistoryData(historyBridged)
-      setForecastData(forecast)
+      if (Array.isArray(backendForecast) && backendForecast.length > 0) {
+        // Use Real Forecast
+        finalForecast = backendForecast.map((p: any) => {
+           const mean = Number(p.value) || 0
+           const sd = Math.round(mean * 0.1) 
+           return {
+             time: String(p.dt),
+             observed: null,
+             recovered: null,
+             forecastMean: mean,
+             ciLower: Math.max(0, mean - sd),
+             ciUpper: mean + sd,
+             stockout: false,
+             isForecast: true,
+           }
+        })
+        
+        // Bridge history to forecast for nice line chart
+        if (history.length > 0) {
+           const last = history[history.length - 1]
+           const bridgePoint = {
+             ...last,
+             forecastMean: last.observed ?? last.recovered ?? 0,
+             isForecast: false, 
+           }
+           historyFinal = history.slice(0, -1).concat([bridgePoint])
+        }
+
+      } else {
+        // NO Forecast available - Do not mock
+        finalForecast = []
+        // History remains as is
+        historyFinal = history
+      }
+
+      setHistoryData(historyFinal)
+      setForecastData(finalForecast)
 
       // ✅ expose last_dt parts cho AI (không phá meta từ backend)
       setMetaData((prev: any) => ({
         ...(prev && typeof prev === 'object' ? prev : {}),
-        last_history: lastHistory,
+        last_history: lastHistoryData,
       }))
 
       // Accuracy panel (nếu còn dùng ở nơi khác)
@@ -288,8 +260,8 @@ function useInternalState(): State {
       }
 
       // Inventory suggestion dựa trên KPI (mergedAll sẽ cập nhật qua effect)
-      const nextKpis = computeKpisFromData(mergeSorted([...historyBridged, ...forecast]))
-      const histOnly = historyBridged
+      const nextKpis = computeKpisFromData(mergeSorted([...historyFinal, ...finalForecast]))
+      const histOnly = historyFinal
       const daysOrHours = Math.max(1, histOnly.length)
       const denom = aggregation === 'hourly' ? daysOrHours : (daysOrHours * 24)
       const meanPerHour = Math.max(1, Math.round((nextKpis.observedSum || 0) / denom))

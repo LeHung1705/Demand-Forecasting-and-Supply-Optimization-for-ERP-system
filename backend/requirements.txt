@@ -30,3 +30,6 @@ fastapi==0.115.6
 uvicorn==0.30.6
 watchfiles==1.1.1
 websockets==15.0.1
+
+matplotlib==3.10.8
+reportlab==4.4.7
