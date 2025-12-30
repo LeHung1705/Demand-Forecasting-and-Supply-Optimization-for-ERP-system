@@ -32,4 +32,5 @@ watchfiles==1.1.1
 websockets==15.0.1
 
 matplotlib==3.10.8
-reportlab==4.4.7
+reportlab==4.4.7scipy
+fpdf==1.7.2
