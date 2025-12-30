@@ -17,26 +17,14 @@ class Bounds:
 
 
 class CsvDuckStore:
-    """
-    Persistent DuckDB cache over CSV.
-
-    - DB file: DUCKDB_PATH (backend/.cache/app.duckdb)
-    - Materialized tables:
-        - sales_original (Observed)  from CSV_PATH
-        - sales_imputed  (Recovered) from CSV_IMPUTED_PATH
-      Compatibility view:
-        - sales := sales_original
-
-    - Rebuild when any CSV mtime changes.
-    """
-
     _lock = threading.Lock()
     _instance: Optional["CsvDuckStore"] = None
 
     def __init__(self, csv_path: str, duckdb_path: str, imputed_csv_path: Optional[str] = None):
-        self.csv_path = csv_path
-        self.imputed_csv_path = imputed_csv_path or ""
-        self.duckdb_path = duckdb_path
+        # csv_path points to original_data.csv (transaction data)
+        self.csv_path = str(csv_path or "")
+        self.imputed_csv_path = str(imputed_csv_path or "")
+        self.duckdb_path = str(duckdb_path or "")
         self._conn: Optional[duckdb.DuckDBPyConnection] = None
 
     @classmethod
@@ -46,26 +34,31 @@ class CsvDuckStore:
         duckdb_path: Optional[str] = None,
         imputed_csv_path: Optional[str] = None,
     ) -> "CsvDuckStore":
-        """
-        Singleton accessor.
-
-        NOTE: Some callers want to call `CsvDuckStore.instance()` with no args
-        (e.g. after CSV writes) so we allow optional params once the instance exists.
-        """
         with cls._lock:
             if cls._instance is None:
                 if not csv_path or not duckdb_path:
                     raise ValueError("CsvDuckStore.instance requires csv_path and duckdb_path on first call")
                 cls._instance = cls(csv_path=csv_path, duckdb_path=duckdb_path, imputed_csv_path=imputed_csv_path)
             else:
-                # Backward compatible: keep latest paths if provided later
                 if csv_path:
-                    cls._instance.csv_path = csv_path
+                    cls._instance.csv_path = str(csv_path)
                 if duckdb_path:
-                    cls._instance.duckdb_path = duckdb_path
-                if imputed_csv_path and not cls._instance.imputed_csv_path:
-                    cls._instance.imputed_csv_path = imputed_csv_path
+                    cls._instance.duckdb_path = str(duckdb_path)
+                if imputed_csv_path is not None:
+                    cls._instance.imputed_csv_path = str(imputed_csv_path)
             return cls._instance
+
+    def _drop_any(self, c: duckdb.DuckDBPyConnection, name: str) -> None:
+        """
+        DuckDB forbids dropping a VIEW when the object is actually a TABLE (and vice-versa).
+        Previous runs may have created these names as TABLES, so always try both.
+        """
+        # Try view first, then table (order doesn't matter as we swallow type-mismatch errors).
+        for stmt in (f"DROP VIEW IF EXISTS {name}", f"DROP TABLE IF EXISTS {name}"):
+            try:
+                c.execute(stmt)
+            except Exception:
+                pass
 
     def conn(self) -> duckdb.DuckDBPyConnection:
         if self._conn is None:
@@ -73,184 +66,161 @@ class CsvDuckStore:
         assert self._conn is not None
         return self._conn
 
-    def _table_exists(self, name: str) -> bool:
-        row = self.conn().execute(
-            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name=?",
-            [name],
-        ).fetchone()
-        return bool((row[0] or 0) > 0)
-
-    def _drop_any(self, c: duckdb.DuckDBPyConnection, name: str) -> None:
-        """
-        Drop either VIEW or TABLE safely (DuckDB throws if type mismatches).
-        """
-        try:
-            c.execute(f"DROP VIEW IF EXISTS {name}")
-        except Exception:
-            pass
-        try:
-            c.execute(f"DROP TABLE IF EXISTS {name}")
-        except Exception:
-            pass
-
-    def _observed_select_sql(self) -> str:
-        """
-        Canonical projection/casts used both for creating tables and for the
-        refreshable view over the CSV on disk.
-        """
-        return """
-        SELECT
-          CAST(city_id AS INTEGER)             AS city_id,
-          CAST(store_id AS INTEGER)            AS store_id,
-          CAST(management_group_id AS INTEGER) AS management_group_id,
-          CAST(first_category_id AS INTEGER)   AS first_category_id,
-          CAST(second_category_id AS INTEGER)  AS second_category_id,
-          CAST(third_category_id AS INTEGER)   AS third_category_id,
-          CAST(product_id AS INTEGER)          AS product_id,
-          CAST(dt AS DATE)                     AS dt,
-          CAST(sale_amount AS DOUBLE)          AS sale_amount,
-          CAST(hours_sale AS VARCHAR)          AS hours_sale,
-          CAST(stock_hour6_22_cnt AS INTEGER)  AS stock_hour6_22_cnt,
-          CAST(hours_stock_status AS VARCHAR)  AS hours_stock_status,
-          CAST(discount AS DOUBLE)             AS discount,
-          CAST(holiday_flag AS INTEGER)        AS holiday_flag,
-          CAST(activity_flag AS INTEGER)       AS activity_flag,
-          CAST(precpt AS DOUBLE)               AS precpt,
-          CAST(avg_temperature AS DOUBLE)      AS avg_temperature,
-          CAST(avg_humidity AS DOUBLE)         AS avg_humidity,
-          CAST(avg_wind_level AS DOUBLE)       AS avg_wind_level
-        FROM read_csv_auto(?, header=true)
-        """
-
-    def _create_sales_table_from_csv(self, c: duckdb.DuckDBPyConnection, table_name: str, csv_path: str) -> None:
-        c.execute(f"DROP TABLE IF EXISTS {table_name}")
-        c.execute(
-            f"""
-            CREATE TABLE {table_name} AS
-            {self._observed_select_sql()}
-            """,
-            [csv_path],
-        )
-
     def init(self) -> None:
-        os.makedirs(os.path.dirname(self.duckdb_path), exist_ok=True)
-
+        os.makedirs(os.path.dirname(os.path.abspath(self.duckdb_path)), exist_ok=True)
         self._conn = duckdb.connect(self.duckdb_path)
-        c = self._conn
 
+        c = self._conn
         c.execute("CREATE TABLE IF NOT EXISTS app_meta(k VARCHAR PRIMARY KEY, v VARCHAR)")
 
-        original_mtime = str(int(os.path.getmtime(self.csv_path))) if os.path.exists(self.csv_path) else "0"
-        imputed_mtime = str(int(os.path.getmtime(self.imputed_csv_path))) if os.path.exists(self.imputed_csv_path) else "0"
+        # Robust cleanup for legacy TABLE/VIEW conflicts (before (re)creating anything)
+        for obj in ("sales", "sales_original", "sales_imputed", "v_observed"):
+            self._drop_any(c, obj)
 
-        cached_original = c.execute("SELECT v FROM app_meta WHERE k='csv_mtime_original'").fetchone()
-        cached_imputed = c.execute("SELECT v FROM app_meta WHERE k='csv_mtime_imputed'").fetchone()
-
-        cached_original_mtime = cached_original[0] if cached_original else None
-        cached_imputed_mtime = cached_imputed[0] if cached_imputed else None
-
-        need_rebuild = (
-            (not self._table_exists("sales_original"))
-            or (not self._table_exists("sales_imputed"))
-            or (cached_original_mtime != original_mtime)
-            or (cached_imputed_mtime != imputed_mtime)
-        )
-
-        if need_rebuild:
-            print("⏳ Đang tạo lại bảng dữ liệu DuckDB từ CSV (Observed + Recovered)...")
-
-            # FIX: sales đôi khi là TABLE (legacy), đôi khi là VIEW
-            self._drop_any(c, "sales")
-            self._drop_any(c, "sales_original")
-            self._drop_any(c, "sales_imputed")
-            self._drop_any(c, "v_observed")
-
-            if os.path.exists(self.csv_path):
-                self._create_sales_table_from_csv(c, "sales_original", self.csv_path)
-            else:
-                c.execute("CREATE TABLE sales_original AS SELECT 1 AS dummy WHERE 1=0")
-
-            if self.imputed_csv_path and os.path.exists(self.imputed_csv_path):
-                self._create_sales_table_from_csv(c, "sales_imputed", self.imputed_csv_path)
-            else:
-                c.execute("CREATE TABLE sales_imputed AS SELECT * FROM sales_original WHERE 1=0")
-
-            # Backward compatible name used by legacy services
-            c.execute("CREATE VIEW sales AS SELECT * FROM sales_original")
-
-            c.execute("INSERT OR REPLACE INTO app_meta(k, v) VALUES ('csv_mtime_original', ?)", [original_mtime])
-            c.execute("INSERT OR REPLACE INTO app_meta(k, v) VALUES ('csv_mtime_imputed', ?)", [imputed_mtime])
-            c.execute("INSERT OR REPLACE INTO app_meta(k, v) VALUES ('csv_mtime', ?)", [original_mtime])
-
-            for stmt in [
-                "CREATE INDEX IF NOT EXISTS idx_sales_original_dt ON sales_original(dt)",
-                "CREATE INDEX IF NOT EXISTS idx_sales_original_store ON sales_original(store_id)",
-                "CREATE INDEX IF NOT EXISTS idx_sales_original_product ON sales_original(product_id)",
-                "CREATE INDEX IF NOT EXISTS idx_sales_imputed_dt ON sales_imputed(dt)",
-                "CREATE INDEX IF NOT EXISTS idx_sales_imputed_store ON sales_imputed(store_id)",
-                "CREATE INDEX IF NOT EXISTS idx_sales_imputed_product ON sales_imputed(product_id)",
-            ]:
-                try:
-                    c.execute(stmt)
-                except Exception:
-                    pass
-
-            print("✅ Đã tải xong dữ liệu!")
+        # Create/refresh all CSV-backed views (includes v_observed, sales_original, sales, sales_imputed)
+        self.refresh_view()
 
     def refresh_view(self) -> None:
         """
-        Force DuckDB to see the latest observed CSV on disk, without server restart.
+        Master Data + Transaction Data architecture:
 
-        DuckDB does not allow prepared parameters (`?`) inside CREATE VIEW statements,
-        so we must inline the CSV path into the SQL.
+        - Transaction (sales): self.csv_path (original_data.csv)
+        - Master (products): products.csv in the same folder as original_data.csv
+
+        CRITICAL:
+        - DuckDB CREATE VIEW cannot use `?` parameters. Use f-strings for paths.
+        - v_observed is a unified view joining sales + products metadata.
+        - MUST drop BOTH TABLE and VIEW variants before recreating to avoid CatalogException.
         """
-        c = self.conn()
+        c = self._conn if self._conn is not None else duckdb.connect(self.duckdb_path)
+        if self._conn is None:
+            self._conn = c
 
-        # Ensure no name conflicts (table vs view)
-        self._drop_any(c, "v_observed")
-        self._drop_any(c, "sales_original")
-        self._drop_any(c, "sales")
+        path_sales = os.path.abspath(self.csv_path)
+        base_dir = os.path.dirname(path_sales)
+        path_products = os.path.join(base_dir, "products.csv")
 
-        # Inline path (avoid binder error: "Unexpected prepared parameter")
-        csv_path_sql = (self.csv_path or "").replace("\\", "/").replace("'", "''")
+        # Inline + escape for SQL string literal
+        sales_sql = path_sales.replace("\\", "/").replace("'", "''")
+        products_sql = path_products.replace("\\", "/").replace("'", "''")
 
-        c.execute(
-            f"""
-            CREATE OR REPLACE VIEW v_observed AS
-            SELECT
-              CAST(city_id AS INTEGER)             AS city_id,
-              CAST(store_id AS INTEGER)            AS store_id,
-              CAST(management_group_id AS INTEGER) AS management_group_id,
-              CAST(first_category_id AS INTEGER)   AS first_category_id,
-              CAST(second_category_id AS INTEGER)  AS second_category_id,
-              CAST(third_category_id AS INTEGER)   AS third_category_id,
-              CAST(product_id AS INTEGER)          AS product_id,
-              CAST(dt AS DATE)                     AS dt,
-              CAST(sale_amount AS DOUBLE)          AS sale_amount,
-              CAST(hours_sale AS VARCHAR)          AS hours_sale,
-              CAST(stock_hour6_22_cnt AS INTEGER)  AS stock_hour6_22_cnt,
-              CAST(hours_stock_status AS VARCHAR)  AS hours_stock_status,
-              CAST(discount AS DOUBLE)             AS discount,
-              CAST(holiday_flag AS INTEGER)        AS holiday_flag,
-              CAST(activity_flag AS INTEGER)       AS activity_flag,
-              CAST(precpt AS DOUBLE)               AS precpt,
-              CAST(avg_temperature AS DOUBLE)      AS avg_temperature,
-              CAST(avg_humidity AS DOUBLE)         AS avg_humidity,
-              CAST(avg_wind_level AS DOUBLE)       AS avg_wind_level
-            FROM read_csv_auto('{csv_path_sql}', header=true)
-            """
-        )
+        # Robust cleanup for legacy TABLE/VIEW conflicts
+        for obj in ("sales", "sales_original", "sales_imputed", "v_observed"):
+            self._drop_any(c, obj)
 
-        # Make the rest of the codebase read from the fresh CSV-backed view
+        products_exists = os.path.exists(path_products)
+
+        if products_exists:
+            # Explicit projection to avoid duplicate column names (s.* + p.city_id would collide)
+            c.execute(
+                f"""
+                CREATE OR REPLACE VIEW v_observed AS
+                SELECT
+                  CAST(s.store_id AS INTEGER)   AS store_id,
+                  CAST(s.product_id AS INTEGER) AS product_id,
+                  CAST(s.dt AS DATE)            AS dt,
+
+                  CAST(s.sale_amount AS DOUBLE) AS sale_amount,
+                  CAST(s.hours_sale AS VARCHAR) AS hours_sale,
+                  CAST(s.stock_hour6_22_cnt AS INTEGER) AS stock_hour6_22_cnt,
+                  CAST(s.hours_stock_status AS VARCHAR) AS hours_stock_status,
+                  CAST(s.discount AS DOUBLE)    AS discount,
+                  CAST(s.holiday_flag AS INTEGER) AS holiday_flag,
+                  CAST(s.activity_flag AS INTEGER) AS activity_flag,
+                  CAST(s.precpt AS DOUBLE)      AS precpt,
+                  CAST(s.avg_temperature AS DOUBLE) AS avg_temperature,
+                  CAST(s.avg_humidity AS DOUBLE) AS avg_humidity,
+                  CAST(s.avg_wind_level AS DOUBLE) AS avg_wind_level,
+
+                  -- Master data (prefer products.csv; fallback to sales columns if present)
+                  CAST(COALESCE(p.city_id, s.city_id) AS INTEGER) AS city_id,
+                  CAST(COALESCE(p.first_category_id, s.first_category_id) AS INTEGER) AS first_category_id,
+                  CAST(COALESCE(p.second_category_id, s.second_category_id) AS INTEGER) AS second_category_id,
+                  CAST(COALESCE(p.third_category_id, s.third_category_id) AS INTEGER) AS third_category_id,
+                  CAST(COALESCE(p.management_group_id, s.management_group_id) AS INTEGER) AS management_group_id
+                FROM read_csv_auto('{sales_sql}', header=true) s
+                LEFT JOIN read_csv_auto('{products_sql}', header=true) p
+                  ON CAST(s.store_id AS INTEGER) = CAST(p.store_id AS INTEGER)
+                 AND CAST(s.product_id AS INTEGER) = CAST(p.product_id AS INTEGER)
+                """
+            )
+        else:
+            # Fallback: single-file mode (no products.csv yet)
+            c.execute(
+                f"""
+                CREATE OR REPLACE VIEW v_observed AS
+                SELECT
+                  CAST(city_id AS INTEGER)             AS city_id,
+                  CAST(store_id AS INTEGER)            AS store_id,
+                  CAST(management_group_id AS INTEGER) AS management_group_id,
+                  CAST(first_category_id AS INTEGER)   AS first_category_id,
+                  CAST(second_category_id AS INTEGER)  AS second_category_id,
+                  CAST(third_category_id AS INTEGER)   AS third_category_id,
+                  CAST(product_id AS INTEGER)          AS product_id,
+                  CAST(dt AS DATE)                     AS dt,
+                  CAST(sale_amount AS DOUBLE)          AS sale_amount,
+                  CAST(hours_sale AS VARCHAR)          AS hours_sale,
+                  CAST(stock_hour6_22_cnt AS INTEGER)  AS stock_hour6_22_cnt,
+                  CAST(hours_stock_status AS VARCHAR)  AS hours_stock_status,
+                  CAST(discount AS DOUBLE)             AS discount,
+                  CAST(holiday_flag AS INTEGER)        AS holiday_flag,
+                  CAST(activity_flag AS INTEGER)       AS activity_flag,
+                  CAST(precpt AS DOUBLE)               AS precpt,
+                  CAST(avg_temperature AS DOUBLE)      AS avg_temperature,
+                  CAST(avg_humidity AS DOUBLE)         AS avg_humidity,
+                  CAST(avg_wind_level AS DOUBLE)       AS avg_wind_level
+                FROM read_csv_auto('{sales_sql}', header=true)
+                """
+            )
+
+        # Keep legacy names used across services/routes
         c.execute("CREATE OR REPLACE VIEW sales_original AS SELECT * FROM v_observed")
         c.execute("CREATE OR REPLACE VIEW sales AS SELECT * FROM sales_original")
 
-        # Update meta so a future `init()` doesn't wrongly think it's stale
+        # (Re)create sales_imputed as a VIEW (never a TABLE), to avoid future conflicts.
+        if self.imputed_csv_path and os.path.exists(self.imputed_csv_path):
+            path_rec = os.path.abspath(self.imputed_csv_path).replace("\\", "/").replace("'", "''")
+            c.execute(
+                f"""
+                CREATE OR REPLACE VIEW sales_imputed AS
+                SELECT
+                  CAST(store_id AS INTEGER)   AS store_id,
+                  CAST(product_id AS INTEGER) AS product_id,
+                  CAST(dt AS DATE)            AS dt,
+                  CAST(sale_amount AS DOUBLE) AS sale_amount,
+                  CAST(hours_sale AS VARCHAR) AS hours_sale,
+                  CAST(stock_hour6_22_cnt AS INTEGER) AS stock_hour6_22_cnt,
+                  CAST(hours_stock_status AS VARCHAR) AS hours_stock_status,
+                  CAST(discount AS DOUBLE)    AS discount,
+                  CAST(holiday_flag AS INTEGER) AS holiday_flag,
+                  CAST(activity_flag AS INTEGER) AS activity_flag,
+                  CAST(precpt AS DOUBLE)      AS precpt,
+                  CAST(avg_temperature AS DOUBLE) AS avg_temperature,
+                  CAST(avg_humidity AS DOUBLE) AS avg_humidity,
+                  CAST(avg_wind_level AS DOUBLE) AS avg_wind_level
+                FROM read_csv_auto('{path_rec}', header=true)
+                """
+            )
+        else:
+            c.execute("CREATE OR REPLACE VIEW sales_imputed AS SELECT * FROM sales WHERE 1=0")
+
+        # Update mtimes (best-effort)
         try:
-            if os.path.exists(self.csv_path):
-                original_mtime = str(int(os.path.getmtime(self.csv_path)))
-                c.execute("INSERT OR REPLACE INTO app_meta(k, v) VALUES ('csv_mtime_original', ?)", [original_mtime])
-                c.execute("INSERT OR REPLACE INTO app_meta(k, v) VALUES ('csv_mtime', ?)", [original_mtime])
+            if os.path.exists(path_sales):
+                c.execute(
+                    "INSERT OR REPLACE INTO app_meta(k, v) VALUES ('csv_mtime_original', ?)",
+                    [str(int(os.path.getmtime(path_sales)))],
+                )
+            if products_exists:
+                c.execute(
+                    "INSERT OR REPLACE INTO app_meta(k, v) VALUES ('csv_mtime_products', ?)",
+                    [str(int(os.path.getmtime(path_products)))],
+                )
+            if self.imputed_csv_path and os.path.exists(self.imputed_csv_path):
+                c.execute(
+                    "INSERT OR REPLACE INTO app_meta(k, v) VALUES ('csv_mtime_imputed', ?)",
+                    [str(int(os.path.getmtime(self.imputed_csv_path)))],
+                )
         except Exception:
             pass
 
@@ -259,9 +229,6 @@ class CsvDuckStore:
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
-    # -----------------------
-    # Helpers (used by services)
-    # -----------------------
     def _where(
         self,
         store_id: Optional[int] = None,
