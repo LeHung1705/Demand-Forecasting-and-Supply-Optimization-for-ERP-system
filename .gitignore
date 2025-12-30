@@ -114,3 +114,7 @@ config/local.py
 # Cache folders
 backend/.cache/
 __pycache__/
+
+data/
+checkpoints/
+logs/
