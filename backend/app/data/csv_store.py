@@ -40,12 +40,29 @@ class CsvDuckStore:
         self._conn: Optional[duckdb.DuckDBPyConnection] = None
 
     @classmethod
-    def instance(cls, csv_path: str, duckdb_path: str, imputed_csv_path: Optional[str] = None) -> "CsvDuckStore":
+    def instance(
+        cls,
+        csv_path: Optional[str] = None,
+        duckdb_path: Optional[str] = None,
+        imputed_csv_path: Optional[str] = None,
+    ) -> "CsvDuckStore":
+        """
+        Singleton accessor.
+
+        NOTE: Some callers want to call `CsvDuckStore.instance()` with no args
+        (e.g. after CSV writes) so we allow optional params once the instance exists.
+        """
         with cls._lock:
             if cls._instance is None:
+                if not csv_path or not duckdb_path:
+                    raise ValueError("CsvDuckStore.instance requires csv_path and duckdb_path on first call")
                 cls._instance = cls(csv_path=csv_path, duckdb_path=duckdb_path, imputed_csv_path=imputed_csv_path)
             else:
-                # keep latest paths if provided later (backward compatible calls)
+                # Backward compatible: keep latest paths if provided later
+                if csv_path:
+                    cls._instance.csv_path = csv_path
+                if duckdb_path:
+                    cls._instance.duckdb_path = duckdb_path
                 if imputed_csv_path and not cls._instance.imputed_csv_path:
                     cls._instance.imputed_csv_path = imputed_csv_path
             return cls._instance
@@ -63,50 +80,57 @@ class CsvDuckStore:
         ).fetchone()
         return bool((row[0] or 0) > 0)
 
+    def _drop_any(self, c: duckdb.DuckDBPyConnection, name: str) -> None:
+        """
+        Drop either VIEW or TABLE safely (DuckDB throws if type mismatches).
+        """
+        try:
+            c.execute(f"DROP VIEW IF EXISTS {name}")
+        except Exception:
+            pass
+        try:
+            c.execute(f"DROP TABLE IF EXISTS {name}")
+        except Exception:
+            pass
+
+    def _observed_select_sql(self) -> str:
+        """
+        Canonical projection/casts used both for creating tables and for the
+        refreshable view over the CSV on disk.
+        """
+        return """
+        SELECT
+          CAST(city_id AS INTEGER)             AS city_id,
+          CAST(store_id AS INTEGER)            AS store_id,
+          CAST(management_group_id AS INTEGER) AS management_group_id,
+          CAST(first_category_id AS INTEGER)   AS first_category_id,
+          CAST(second_category_id AS INTEGER)  AS second_category_id,
+          CAST(third_category_id AS INTEGER)   AS third_category_id,
+          CAST(product_id AS INTEGER)          AS product_id,
+          CAST(dt AS DATE)                     AS dt,
+          CAST(sale_amount AS DOUBLE)          AS sale_amount,
+          CAST(hours_sale AS VARCHAR)          AS hours_sale,
+          CAST(stock_hour6_22_cnt AS INTEGER)  AS stock_hour6_22_cnt,
+          CAST(hours_stock_status AS VARCHAR)  AS hours_stock_status,
+          CAST(discount AS DOUBLE)             AS discount,
+          CAST(holiday_flag AS INTEGER)        AS holiday_flag,
+          CAST(activity_flag AS INTEGER)       AS activity_flag,
+          CAST(precpt AS DOUBLE)               AS precpt,
+          CAST(avg_temperature AS DOUBLE)      AS avg_temperature,
+          CAST(avg_humidity AS DOUBLE)         AS avg_humidity,
+          CAST(avg_wind_level AS DOUBLE)       AS avg_wind_level
+        FROM read_csv_auto(?, header=true)
+        """
+
     def _create_sales_table_from_csv(self, c: duckdb.DuckDBPyConnection, table_name: str, csv_path: str) -> None:
         c.execute(f"DROP TABLE IF EXISTS {table_name}")
         c.execute(
             f"""
             CREATE TABLE {table_name} AS
-            SELECT
-              CAST(city_id AS INTEGER)             AS city_id,
-              CAST(store_id AS INTEGER)            AS store_id,
-              CAST(management_group_id AS INTEGER) AS management_group_id,
-              CAST(first_category_id AS INTEGER)   AS first_category_id,
-              CAST(second_category_id AS INTEGER)  AS second_category_id,
-              CAST(third_category_id AS INTEGER)   AS third_category_id,
-              CAST(product_id AS INTEGER)          AS product_id,
-              CAST(dt AS DATE)                     AS dt,
-              CAST(sale_amount AS DOUBLE)          AS sale_amount,
-              CAST(hours_sale AS VARCHAR)          AS hours_sale,
-              CAST(stock_hour6_22_cnt AS INTEGER)  AS stock_hour6_22_cnt,
-              CAST(hours_stock_status AS VARCHAR)  AS hours_stock_status,
-              CAST(discount AS DOUBLE)             AS discount,
-              CAST(holiday_flag AS INTEGER)        AS holiday_flag,
-              CAST(activity_flag AS INTEGER)       AS activity_flag,
-              CAST(precpt AS DOUBLE)               AS precpt,
-              CAST(avg_temperature AS DOUBLE)      AS avg_temperature,
-              CAST(avg_humidity AS DOUBLE)         AS avg_humidity,
-              CAST(avg_wind_level AS DOUBLE)       AS avg_wind_level
-            FROM read_csv_auto(?, header=true)
+            {self._observed_select_sql()}
             """,
             [csv_path],
         )
-
-    def _drop_any(self, c: duckdb.DuckDBPyConnection, name: str) -> None:
-        """
-        Drop either VIEW or TABLE safely (DuckDB throws if type mismatches).
-        """
-        # Try drop view first
-        try:
-            c.execute(f"DROP VIEW IF EXISTS {name}")
-        except Exception:
-            pass
-        # Then try drop table
-        try:
-            c.execute(f"DROP TABLE IF EXISTS {name}")
-        except Exception:
-            pass
 
     def init(self) -> None:
         os.makedirs(os.path.dirname(self.duckdb_path), exist_ok=True)
@@ -139,6 +163,7 @@ class CsvDuckStore:
             self._drop_any(c, "sales")
             self._drop_any(c, "sales_original")
             self._drop_any(c, "sales_imputed")
+            self._drop_any(c, "v_observed")
 
             if os.path.exists(self.csv_path):
                 self._create_sales_table_from_csv(c, "sales_original", self.csv_path)
@@ -171,6 +196,63 @@ class CsvDuckStore:
                     pass
 
             print("✅ Đã tải xong dữ liệu!")
+
+    def refresh_view(self) -> None:
+        """
+        Force DuckDB to see the latest observed CSV on disk, without server restart.
+
+        DuckDB does not allow prepared parameters (`?`) inside CREATE VIEW statements,
+        so we must inline the CSV path into the SQL.
+        """
+        c = self.conn()
+
+        # Ensure no name conflicts (table vs view)
+        self._drop_any(c, "v_observed")
+        self._drop_any(c, "sales_original")
+        self._drop_any(c, "sales")
+
+        # Inline path (avoid binder error: "Unexpected prepared parameter")
+        csv_path_sql = (self.csv_path or "").replace("\\", "/").replace("'", "''")
+
+        c.execute(
+            f"""
+            CREATE OR REPLACE VIEW v_observed AS
+            SELECT
+              CAST(city_id AS INTEGER)             AS city_id,
+              CAST(store_id AS INTEGER)            AS store_id,
+              CAST(management_group_id AS INTEGER) AS management_group_id,
+              CAST(first_category_id AS INTEGER)   AS first_category_id,
+              CAST(second_category_id AS INTEGER)  AS second_category_id,
+              CAST(third_category_id AS INTEGER)   AS third_category_id,
+              CAST(product_id AS INTEGER)          AS product_id,
+              CAST(dt AS DATE)                     AS dt,
+              CAST(sale_amount AS DOUBLE)          AS sale_amount,
+              CAST(hours_sale AS VARCHAR)          AS hours_sale,
+              CAST(stock_hour6_22_cnt AS INTEGER)  AS stock_hour6_22_cnt,
+              CAST(hours_stock_status AS VARCHAR)  AS hours_stock_status,
+              CAST(discount AS DOUBLE)             AS discount,
+              CAST(holiday_flag AS INTEGER)        AS holiday_flag,
+              CAST(activity_flag AS INTEGER)       AS activity_flag,
+              CAST(precpt AS DOUBLE)               AS precpt,
+              CAST(avg_temperature AS DOUBLE)      AS avg_temperature,
+              CAST(avg_humidity AS DOUBLE)         AS avg_humidity,
+              CAST(avg_wind_level AS DOUBLE)       AS avg_wind_level
+            FROM read_csv_auto('{csv_path_sql}', header=true)
+            """
+        )
+
+        # Make the rest of the codebase read from the fresh CSV-backed view
+        c.execute("CREATE OR REPLACE VIEW sales_original AS SELECT * FROM v_observed")
+        c.execute("CREATE OR REPLACE VIEW sales AS SELECT * FROM sales_original")
+
+        # Update meta so a future `init()` doesn't wrongly think it's stale
+        try:
+            if os.path.exists(self.csv_path):
+                original_mtime = str(int(os.path.getmtime(self.csv_path)))
+                c.execute("INSERT OR REPLACE INTO app_meta(k, v) VALUES ('csv_mtime_original', ?)", [original_mtime])
+                c.execute("INSERT OR REPLACE INTO app_meta(k, v) VALUES ('csv_mtime', ?)", [original_mtime])
+        except Exception:
+            pass
 
     def query(self, sql: str, params: Optional[Iterable[Any]] = None) -> List[Dict[str, Any]]:
         cur = self.conn().execute(sql, list(params or []))
