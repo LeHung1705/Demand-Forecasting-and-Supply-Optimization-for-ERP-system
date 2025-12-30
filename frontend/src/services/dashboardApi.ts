@@ -9,9 +9,12 @@ type LoadParams = {
 }
 
 function toIntOrUndefined(v?: string): number | undefined {
-  if (!v) return undefined
-  const n = Number(v)
-  return Number.isFinite(n) ? n : undefined
+  const s = String(v ?? '').trim()
+  if (!s) return undefined
+  const n = Number(s)
+  if (!Number.isFinite(n)) return undefined
+  // ✅ allow 0
+  return Math.trunc(n)
 }
 
 export async function loadDashboardFromApi(

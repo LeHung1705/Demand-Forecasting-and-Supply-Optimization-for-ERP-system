@@ -1,11 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { loadDashboardFromApi, loadAccuracyFromApi } from '../services/dashboardApi'
+import React, { useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { computeKpisFromData, type ChartPoint } from '../utils/mockDashboardData'
 import { computeInventoryOutputs, type InventoryInputs, type InventoryOutputs } from '../utils/inventory'
 import { APP_CONFIG } from '../utils/constants'
-
-// ✅ remove unused type alias to satisfy eslint
-// type DashboardResult = Awaited<ReturnType<typeof loadDashboardFromApi>>
+import { fetchInventoryPlan } from '../services/inventoryService'
+import { loadAccuracyFromApi } from '../services/dashboardApi'
 
 export type DashboardKpis = {
   observedSum: number
@@ -14,133 +12,50 @@ export type DashboardKpis = {
   forecastNextHorizon: number
 }
 
-type State = {
+export type DashboardState = {
   timeRange: '7d' | '30d' | '90d'
-  setTimeRange: (v: any) => void
+  setTimeRange: (v: '7d' | '30d' | '90d') => void
+
   aggregation: 'hourly' | 'daily'
-  setAggregation: (v: any) => void
+  setAggregation: (v: 'hourly' | 'daily') => void
+
   storeId: string
-  setStoreId: (v: any) => void
+  setStoreId: (v: string) => void
+
   sku: string
-  setSku: (v: any) => void
+  setSku: (v: string) => void
 
   showStockout: boolean
-  setShowStockout: (v: any) => void
+  setShowStockout: (v: boolean) => void
+
   showRecovered: boolean
-  setShowRecovered: (v: any) => void
+  setShowRecovered: (v: boolean) => void
+
   showForecastCI: boolean
-  setShowForecastCI: (v: any) => void
+  setShowForecastCI: (v: boolean) => void
 
   chartData: ChartPoint[]
-  setChartData: (d: ChartPoint[]) => void
-
   kpis: Partial<DashboardKpis>
-  setKpis: (k: Partial<DashboardKpis>) => void
 
   inventoryInputs: InventoryInputs
-  setInventoryInputs: (i: InventoryInputs) => void
+  setInventoryInputs: (v: InventoryInputs) => void
+
   inventoryOutputs: InventoryOutputs
-  setInventoryOutputs: (o: InventoryOutputs) => void
-
-  loadData: () => Promise<void>
-  runRecoveryAndForecast: () => void
-  loading: boolean
-
   replenishmentOpen: boolean
   setReplenishmentOpen: (v: boolean) => void
 
+  loadData: () => Promise<void>
+  loading: boolean
+
   accuracyInfo: any
-
   metaData: any
-  setMetaData: (v: any) => void
 }
 
-const DashboardContext = React.createContext<State | undefined>(undefined)
+const DashboardContext = React.createContext<DashboardState | null>(null)
 
-function toNullableInt(v: string | undefined): number | null {
-  const s = (v ?? '').trim()
-  if (!s || s.toLowerCase() === 'all') return null
-  const n = Number(s)
-  return Number.isFinite(n) ? n : null
-}
-
-function toEpochMs(s: any): number | null {
-  const t = Date.parse(String(s))
+function toEpochMs(v: string): number | null {
+  const t = Date.parse(v)
   return Number.isFinite(t) ? t : null
-}
-
-function makeMockForecast(opts: {
-  history: ChartPoint[]
-  aggregation: 'hourly' | 'daily'
-  horizonDays?: number
-}): {
-  historyBridged: ChartPoint[]
-  forecast: ChartPoint[]
-  lastHistory: { iso: string; ts: number; year: number; month: number; day: number }
-} {
-  const horizonDays = opts.horizonDays ?? 7
-  const hist = (opts.history || [])
-    .map((p) => ({ ...p, isForecast: false }))
-    .filter((p) => toEpochMs(p.time) !== null)
-    .sort((a, b) => (toEpochMs(a.time)! - toEpochMs(b.time)!))
-
-  if (hist.length === 0) {
-    return {
-      historyBridged: hist,
-      forecast: [],
-      lastHistory: { iso: '', ts: 0, year: 0, month: 0, day: 0 },
-    }
-  }
-
-  const last = hist[hist.length - 1]             // ✅ đây chính là điểm lịch sử gần nhất (last_dt)
-  const lastTs = toEpochMs(last.time)!           // ✅ timestamp của last_dt
-
-  // ✅ Trích xuất ngày/tháng/năm của last_dt để sau truyền cho AI
-  const lastDate = new Date(lastTs)
-  const lastHistory = {
-    iso: new Date(lastTs).toISOString(),
-    ts: lastTs,
-    year: lastDate.getFullYear(),
-    month: lastDate.getMonth() + 1, // 1-12
-    day: lastDate.getDate(),        // 1-31
-  }
-
-  const stepMs = opts.aggregation === 'hourly' ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000
-  const steps = opts.aggregation === 'hourly' ? horizonDays * 24 : horizonDays
-
-  const lastObserved = Number(last.observed ?? 0) || 0
-
-  const historyBridged = hist.slice(0, -1).concat([
-    {
-      ...last,
-      forecastMean: lastObserved,
-      ciLower: null,
-      ciUpper: null,
-      isForecast: false,
-    },
-  ])
-
-  const forecast: ChartPoint[] = []
-  const base = Math.max(0, lastObserved)
-
-  for (let i = 1; i <= steps; i++) {
-    const ts = lastTs + i * stepMs
-    const mean = Math.max(0, Math.round(base * (0.95 + 0.1 * Math.sin(i / 3)) + (Math.random() - 0.5) * 2))
-    const band = Math.max(1, Math.round(mean * 0.2))
-
-    forecast.push({
-      time: new Date(ts).toISOString(),
-      observed: null,
-      recovered: null,
-      forecastMean: mean,
-      ciLower: Math.max(0, mean - band),
-      ciUpper: mean + band,
-      stockout: false,
-      isForecast: true,
-    })
-  }
-
-  return { historyBridged, forecast, lastHistory }
 }
 
 function mergeSorted(points: ChartPoint[]): ChartPoint[] {
@@ -150,170 +65,232 @@ function mergeSorted(points: ChartPoint[]): ChartPoint[] {
     .sort((a, b) => (toEpochMs(a.time)! - toEpochMs(b.time)!))
 }
 
-function useInternalState(): State {
-  const [timeRange, setTimeRange] = React.useState<'7d' | '30d' | '90d'>('30d')
-  const [aggregation, setAggregation] = React.useState<'hourly' | 'daily'>('hourly')
-  const [storeId, setStoreId] = React.useState<string>('all')
-  const [sku, setSku] = React.useState<string>('')
+function toNullableInt(v?: string): number | null {
+  const s = String(v ?? '').trim()
+  // null means "all"
+  if (!s || s.toLowerCase() === 'all') return null
 
-  const [showStockout, setShowStockout] = React.useState<boolean>(true)
-  const [showRecovered, setShowRecovered] = React.useState<boolean>(true)
-  const [showForecastCI, setShowForecastCI] = React.useState<boolean>(true)
+  const n = Number(s)
+  if (!Number.isFinite(n)) return null
 
-  // ✅ giữ riêng history / forecast
-  const [historyData, setHistoryData] = React.useState<ChartPoint[]>([])
-  const [forecastData, setForecastData] = React.useState<ChartPoint[]>([])
+  // ✅ allow 0 (store_id/product_id can legitimately be 0)
+  const i = Math.trunc(n)
+  return i >= 0 ? i : null
+}
 
-  const [chartData, setChartData] = React.useState<ChartPoint[]>([])
-  const [kpis, setKpis] = React.useState<Partial<DashboardKpis>>({})
+function deriveLastHistory(meta: any): { year: number; month: number; day: number } | null {
+  const raw = meta?.max_dt || meta?.to_date
+  if (!raw) return null
+  const d = new Date(String(raw))
+  if (Number.isNaN(d.getTime())) return null
+  return { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate() }
+}
 
-  const [inventoryInputs, setInventoryInputs] = React.useState<InventoryInputs>({
+function useInternalState(): DashboardState {
+  const [timeRange, setTimeRange] = useState<'7d' | '30d' | '90d'>('30d')
+  const [aggregation, setAggregation] = useState<'hourly' | 'daily'>('daily')
+  const [storeId, setStoreId] = useState<string>('all')
+  const [sku, setSku] = useState<string>('')
+
+  const [showStockout, setShowStockout] = useState<boolean>(true)
+  const [showRecovered, setShowRecovered] = useState<boolean>(true)
+  const [showForecastCI, setShowForecastCI] = useState<boolean>(true)
+
+  const [historyData, setHistoryData] = useState<ChartPoint[]>([])
+  const [forecastData, setForecastData] = useState<ChartPoint[]>([])
+
+  const [kpis, setKpis] = useState<Partial<DashboardKpis>>({})
+
+  const [inventoryInputs, setInventoryInputs] = useState<InventoryInputs>({
     leadTimeHours: 24,
     serviceLevel: 0.95,
   })
-  const [inventoryOutputs, setInventoryOutputs] = React.useState<InventoryOutputs>({
+
+  const [inventoryOutputs, setInventoryOutputs] = useState<InventoryOutputs>({
     leadTimeDemandMean: 0,
     safetyStock: 0,
     rop: 0,
     suggestedOrder: 0,
   })
 
-  const [loading, setLoading] = React.useState(false)
-  const [replenishmentOpen, setReplenishmentOpen] = React.useState(false)
-
-  const [accuracyInfo, setAccuracyInfo] = React.useState<any>(null)
-
+  const [loading, setLoading] = useState(false)
+  const [replenishmentOpen, setReplenishmentOpen] = useState(false)
+  const [accuracyInfo, setAccuracyInfo] = useState<any>(null)
   const [metaData, setMetaData] = useState<any>(null)
 
   const mergedAll = useMemo(() => mergeSorted([...historyData, ...forecastData]), [historyData, forecastData])
 
-  // ✅ OFF => chỉ history (no empty tail). ON => history + forecast (sorted)
-  useEffect(() => {
-    setChartData(showForecastCI ? mergedAll : mergeSorted(historyData))
+  const chartData = useMemo(() => {
+    // Nếu user tắt forecast => chỉ show lịch sử
+    return showForecastCI ? mergedAll : mergeSorted(historyData)
   }, [showForecastCI, mergedAll, historyData])
 
-  // ✅ KPI tính trên mergedAll để KPI forecast không bị mất khi toggle OFF
+  // KPI dựa trên chartData (đã apply showForecastCI)
   useEffect(() => {
-    setKpis(computeKpisFromData(mergedAll))
-  }, [mergedAll])
+    setKpis(computeKpisFromData(chartData))
+  }, [chartData])
+
+  const refreshInventoryFromApi = useCallback(async () => {
+    const sid = toNullableInt(storeId)
+    const pid = toNullableInt(sku)
+
+    // Nếu chưa chọn SKU => fallback mock (tránh gọi API "all products" nặng)
+    if (!pid) {
+      const denom = Math.max(1, chartData.length)
+      const meanPerPoint = Math.max(1, Math.round((kpis.observedSum ?? 0) / denom))
+      setInventoryOutputs(computeInventoryOutputs(inventoryInputs, meanPerPoint))
+      return
+    }
+
+    try {
+      const res = await fetchInventoryPlan({
+        time_range: timeRange,
+        store_id: sid,
+        product_id: pid,
+        lead_time_hours: Number(inventoryInputs.leadTimeHours),
+        service_level: Number(inventoryInputs.serviceLevel),
+      })
+
+      const m = res.metrics
+      setInventoryOutputs({
+        leadTimeDemandMean: Math.round(Number(m.lead_time_demand || 0)),
+        safetyStock: Math.round(Number(m.safety_stock || 0)),
+        rop: Math.round(Number(m.reorder_point || 0)),
+        suggestedOrder: Math.round(Number(m.suggested_order_qty ?? m.reorder_point ?? 0)),
+      })
+    } catch {
+      // Fallback mock nếu API lỗi
+      const denom = Math.max(1, chartData.length)
+      const meanPerPoint = Math.max(1, Math.round((kpis.observedSum ?? 0) / denom))
+      setInventoryOutputs(computeInventoryOutputs(inventoryInputs, meanPerPoint))
+    }
+  }, [storeId, sku, timeRange, inventoryInputs, chartData.length, kpis.observedSum])
 
   const loadData = useCallback(async () => {
     setLoading(true)
     try {
       const base = APP_CONFIG.API_URL || 'http://localhost:8000'
-
       const sid = toNullableInt(storeId)
       const pid = toNullableInt(sku)
 
       const params = new URLSearchParams({
         time_range: timeRange,
-        aggregation: aggregation, // giữ theo state; backend có thể chỉ hỗ trợ daily
+        aggregation: aggregation,
       })
       if (sid !== null) params.set('store_id', String(sid))
       if (pid !== null) params.set('product_id', String(pid))
 
-      const res = await fetch(`${base}/api/v1/dashboard/series?${params.toString()}`)
+      const url = `${base}/api/v1/dashboard/series?${params.toString()}`
+      const res = await fetch(url)
       if (!res.ok) {
         const txt = await res.text().catch(() => '')
-        throw new Error(`dashboard/series failed (${res.status}): ${txt}`)
+        throw new Error(`Load dashboard failed (${res.status}): ${txt}`)
       }
-
       const json = await res.json()
-      setMetaData(json?.meta ?? null)
 
-      // Build history only from observed+recovered (no forecast from backend)
-      const byDt = new Map<string, ChartPoint>()
+      const meta = json?.meta || {}
+      setMetaData({
+        ...meta,
+        last_history: deriveLastHistory(meta),
+      })
 
-      for (const p of json?.observed || []) {
-        const dt = String(p.dt)
-        byDt.set(dt, {
-          time: dt,
-          observed: Number(p.value) || 0,
+      const observed: Array<{ dt: string; value: number }> = Array.isArray(json?.observed) ? json.observed : []
+      const recovered: Array<{ dt: string; value: number }> = Array.isArray(json?.recovered) ? json.recovered : []
+      const forecast: Array<{ dt: string; value: number }> = Array.isArray(json?.forecast) ? json.forecast : []
+
+      const byTime = new Map<string, ChartPoint>()
+      const forecastTimes = new Set<string>()
+
+      for (const p of observed) {
+        const t = String(p.dt)
+        const cur = byTime.get(t) ?? {
+          time: t,
+          observed: null,
           recovered: null,
           forecastMean: null,
           ciLower: null,
           ciUpper: null,
           stockout: false,
           isForecast: false,
-        })
-      }
-
-      for (const p of json?.recovered || []) {
-        const dt = String(p.dt)
-        const cur = byDt.get(dt)
-        if (cur) {
-          cur.recovered = Number(p.value) || 0
-        } else {
-          byDt.set(dt, {
-            time: dt,
-            observed: null,
-            recovered: Number(p.value) || 0,
-            forecastMean: null,
-            ciLower: null,
-            ciUpper: null,
-            stockout: false,
-            isForecast: false,
-          })
         }
+        cur.observed = Number(p.value) || 0
+        byTime.set(t, cur)
       }
 
-      const history = Array.from(byDt.values())
-        .filter((x) => toEpochMs(x.time) !== null)
-        .sort((a, b) => (toEpochMs(a.time)! - toEpochMs(b.time)!))
+      for (const p of recovered) {
+        const t = String(p.dt)
+        const cur = byTime.get(t) ?? {
+          time: t,
+          observed: null,
+          recovered: null,
+          forecastMean: null,
+          ciLower: null,
+          ciUpper: null,
+          stockout: false,
+          isForecast: false,
+        }
+        cur.recovered = Number(p.value) || 0
+        byTime.set(t, cur)
+      }
 
-      setHistoryData(history)
+      for (const p of forecast) {
+        const t = String(p.dt)
+        forecastTimes.add(t)
+        const cur = byTime.get(t) ?? {
+          time: t,
+          observed: null,
+          recovered: null,
+          forecastMean: null,
+          ciLower: null,
+          ciUpper: null,
+          stockout: false,
+          isForecast: true,
+        }
+        cur.forecastMean = Number(p.value) || 0
+        byTime.set(t, cur)
+      }
 
-      // ✅ Make mock forecast AFTER last history point, with bridge
-      const { historyBridged, forecast, lastHistory } = makeMockForecast({
-        history,
-        aggregation,
-        horizonDays: 7,
+      // quyết định isForecast: chỉ là forecast nếu KHÔNG có observed/recovered
+      const all = Array.from(byTime.values()).map((p) => {
+        const hasHist = p.observed !== null || p.recovered !== null
+        const isFc = !hasHist && forecastTimes.has(p.time)
+        return { ...p, isForecast: isFc }
       })
 
-      setHistoryData(historyBridged)
-      setForecastData(forecast)
+      const sorted = mergeSorted(all)
+      setHistoryData(sorted.filter((p) => !p.isForecast))
+      setForecastData(sorted.filter((p) => p.isForecast))
 
-      // ✅ expose last_dt parts cho AI (không phá meta từ backend)
-      setMetaData((prev: any) => ({
-        ...(prev && typeof prev === 'object' ? prev : {}),
-        last_history: lastHistory,
-      }))
-
-      // Accuracy panel (nếu còn dùng ở nơi khác)
-      if (pid !== null) {
-        const acc = await loadAccuracyFromApi({ timeRange, aggregation, storeId, sku })
+      // Accuracy panel (nếu có SKU)
+      if (pid) {
+        const acc = await loadAccuracyFromApi({ timeRange, storeId, sku })
         setAccuracyInfo(acc)
       } else {
         setAccuracyInfo(null)
       }
 
-      // Inventory suggestion dựa trên KPI (mergedAll sẽ cập nhật qua effect)
-      const nextKpis = computeKpisFromData(mergeSorted([...historyBridged, ...forecast]))
-      const histOnly = historyBridged
-      const daysOrHours = Math.max(1, histOnly.length)
-      const denom = aggregation === 'hourly' ? daysOrHours : (daysOrHours * 24)
-      const meanPerHour = Math.max(1, Math.round((nextKpis.observedSum || 0) / denom))
-      setInventoryOutputs(computeInventoryOutputs(inventoryInputs, meanPerHour))
+      // IMPORTANT: cập nhật Inventory Suggestion bằng backend
+      await refreshInventoryFromApi()
     } finally {
       setLoading(false)
     }
-  }, [aggregation, inventoryInputs, sku, storeId, timeRange])
+  }, [aggregation, refreshInventoryFromApi, sku, storeId, timeRange])
 
-  const runRecoveryAndForecast = React.useCallback(() => {
-    // giữ nguyên chức năng cũ nếu có nơi gọi; không làm forecast quá khứ
-    setHistoryData((prev) =>
-      prev.map((p) => {
-        if (p.isForecast) return p
-        const recovered = p.recovered ?? Math.round((p.observed ?? 0) * (1 + Math.random() * 0.3))
-        return { ...p, recovered }
-      })
-    )
-  }, [])
+  // Khi đổi Lead time / Service level và đã chọn SKU => gọi lại backend để update panel
+  useEffect(() => {
+    const pid = toNullableInt(sku)
+    if (!pid) return
+    refreshInventoryFromApi()
+  }, [inventoryInputs, sku, storeId, timeRange, refreshInventoryFromApi])
 
-  React.useEffect(() => {
-    const meanPerHour = Math.max(1, Math.round((kpis.observedSum ?? 0) / Math.max(1, chartData.length)))
-    setInventoryOutputs(computeInventoryOutputs(inventoryInputs, meanPerHour))
-  }, [inventoryInputs, chartData, kpis])
+  // Nếu chưa chọn SKU => cho phép mock “đỡ trống”
+  useEffect(() => {
+    const pid = toNullableInt(sku)
+    if (pid) return
+    const denom = Math.max(1, chartData.length)
+    const meanPerPoint = Math.max(1, Math.round((kpis.observedSum ?? 0) / denom))
+    setInventoryOutputs(computeInventoryOutputs(inventoryInputs, meanPerPoint))
+  }, [inventoryInputs, chartData.length, kpis.observedSum, sku])
 
   return {
     timeRange,
@@ -331,31 +308,26 @@ function useInternalState(): State {
     showForecastCI,
     setShowForecastCI,
     chartData,
-    setChartData,
     kpis,
-    setKpis,
     inventoryInputs,
     setInventoryInputs,
     inventoryOutputs,
-    setInventoryOutputs,
-    loadData,
-    runRecoveryAndForecast,
-    loading,
     replenishmentOpen,
     setReplenishmentOpen,
+    loadData,
+    loading,
     accuracyInfo,
     metaData,
-    setMetaData,
   }
 }
 
 export function DashboardProvider({ children }: { children: React.ReactNode }) {
-  const state = useInternalState()
-  return <DashboardContext.Provider value={state}>{children}</DashboardContext.Provider>
+  const value = useInternalState()
+  return <DashboardContext.Provider value={value}>{children}</DashboardContext.Provider>
 }
 
-export function useDashboardState() {
-  const ctx = React.useContext(DashboardContext)
+export function useDashboardState(): DashboardState {
+  const ctx = useContext(DashboardContext)
   if (!ctx) throw new Error('useDashboardState must be used within DashboardProvider')
   return ctx
 }
