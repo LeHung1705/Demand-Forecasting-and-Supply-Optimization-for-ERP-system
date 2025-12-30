@@ -10,6 +10,7 @@ const Sidebar = () => {
     { path: '/dashboard', label: 'Dashboard', icon: '📊' },
     { path: '/products', label: 'Sản phẩm', icon: '📦' },
     { path: '/planning', label: 'Báo cáo nhu cầu', icon: '🧾' },
+    { path: '/optimization', label: 'Tối ưu tồn kho', icon: '🚀' },
   ];
 
   return (

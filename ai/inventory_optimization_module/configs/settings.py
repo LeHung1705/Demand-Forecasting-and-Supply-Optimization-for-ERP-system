@@ -4,7 +4,7 @@
 PRICE = 50.0
 COST = 30.0
 HOLDING_COST = 1.0  # Per unit per day
-SHORTAGE_COST = 20.0  # Per unit (Lost sale penalty + Opportunity cost)
+SHORTAGE_COST = 100.0  # Per unit (Lost sale penalty + Opportunity cost)
 # Note: Opportunity cost (Margin) is (PRICE - COST) = 20.
 # If SHORTAGE_COST is explicitly 20 ON TOP of margin, total underage cost is 40.
 # If SHORTAGE_COST represents the total impact of a stockout, it might just be the margin.

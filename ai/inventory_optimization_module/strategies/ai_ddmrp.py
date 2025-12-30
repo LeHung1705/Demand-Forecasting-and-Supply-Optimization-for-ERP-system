@@ -6,24 +6,17 @@ class AIDDMRPStrategy(BaseStrategy):
     """
     AI-Driven Demand Driven MRP.
     Dynamically adjusts buffer zones based on AI Forecast.
-    
-    Buffer Zones:
-    - Green Zone: Order Generation Point (Top of Green) to Order Up To (Top of Green + Green Qty)
-    - Yellow Zone: Safety Cover (Consumed first)
-    - Red Zone: Safety Stock (Emergency)
-    
-    Simplified for this demo:
-    Target Stock = Forecast * (Lead Time + Review Period) * Factor + Safety Stock
     """
-    def __init__(self, variability_factor=0.5):
+    def __init__(self, variability_factor=0.5, lead_time=None):
         self.variability_factor = variability_factor
+        self.lead_time = lead_time if lead_time is not None else settings.LEAD_TIME
 
     def calculate_order_qty(self, current_stock: int, forecast: float, pending_orders: int = 0) -> int:
         # ADU (Average Daily Usage) is derived from the immediate AI forecast
         adu = forecast
         
         # Calculate Decoupled Lead Time (DLT)
-        dlt = settings.LEAD_TIME
+        dlt = self.lead_time
         
         # Calculate Buffers
         # Yellow Zone = ADU * DLT

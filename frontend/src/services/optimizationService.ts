@@ -20,4 +20,11 @@ export const optimizationService = {
   getRecommendations: async (params: { time_range?: string; store_id?: number; top_n?: number } = {}) => {
     return await api.get('/api/v1/optimize/recommendations', { params })
   },
+
+  generateReport: async (payload: OptimizeSupplyPayload) => {
+    // Return blob for file download
+    return await api.post('/api/v1/optimize/report', payload, {
+      responseType: 'blob'
+    })
+  },
 }

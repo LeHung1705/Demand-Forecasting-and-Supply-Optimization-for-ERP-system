@@ -1,40 +1,41 @@
-#!/usr/bin/env python3
-import argparse
-import sys
-import warnings
-import os
-warnings.filterwarnings('ignore')
 
-import numpy as np
+import sys
+import os
+import warnings
 import pandas as pd
+import numpy as np
 import torch
+import argparse
 from sklearn.preprocessing import StandardScaler
 
-import os
-
-# Calculate paths relative to this file
+# Add the 'ai' directory to sys.path so we can import modules from it
+# We'll calculate paths relative to this file
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-# ai/demand_forecasting -> ai -> root
-PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))
+# backend/app/utils -> backend/app -> backend -> root -> ai
+PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", "..", ".."))
+AI_DIR = os.path.join(PROJECT_ROOT, "ai")
+BACKEND_DIR = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))
 
-sys.path.append(os.path.join(PROJECT_ROOT, "ai"))
+sys.path.append(AI_DIR)
 
-from data_utils.load_data import load_and_preprocess_data
-from model.baseline_models import get_baseline_model
-from model.dlinear import Model
+# Now we can import from ai
+try:
+    from data_utils.load_data import load_and_preprocess_data
+    from model.baseline_models import get_baseline_model
+    from model.dlinear import Model
+except ImportError as e:
+    print(f"Error importing AI modules: {e}")
+    print(f"sys.path: {sys.path}")
+    sys.exit(1)
 
-DATA_PATH = os.path.join(PROJECT_ROOT, "backend", "app", "data", "imputed_data.csv")
+warnings.filterwarnings('ignore')
 
-# FIX: Point to the sibling 'DemandForecasting' directory for checkpoints
-CKPT_BASE_PATH = os.path.abspath(os.path.join(PROJECT_ROOT, "..", "DemandForecasting", "demand_forecasting", "checkpoints"))
-
-OUTPUT_PATH = os.path.join(PROJECT_ROOT, "backend", "app", "data")
-
-print(f"DEBUG: Data Path: {DATA_PATH}")
-print(f"DEBUG: Checkpoint Base Path: {CKPT_BASE_PATH}")
+# Define paths dynamically
+DATA_PATH = os.path.join(BACKEND_DIR, "app", "data", "imputed_data.csv")
+CKPT_DIR = os.path.join(AI_DIR, "demand_forecasting", "checkpoints")
+OUTPUT_PATH = os.path.join(BACKEND_DIR, "app", "data")
 
 def get_forecast_data(data: pd.DataFrame, start_day: int, month: int, year: int, days_ahead: int = 7, use_decoder=True) -> pd.DataFrame:
-    # forecast_data = data[(data['store_id'] == store_id) & (data['product_id'] == product_id) ].copy()
     forecast_data = data.copy()
     identity = forecast_data[['store_id', 'product_id']].drop_duplicates().reset_index(drop=True)
     forecast_data['dt'] = pd.to_datetime(forecast_data['dt'])
@@ -56,14 +57,13 @@ def get_forecast_data(data: pd.DataFrame, start_day: int, month: int, year: int,
 
 
 def get_torch_forecast_data(forecast_data, use_decoder=True):
-    # arguments
-    series_num = 50000
     horizon = 37 if use_decoder else 30
     window_size = 30 * 16
 
     forecast_data['hours_sale'] = forecast_data['hours_sale'].map(
-        lambda x: x[1:-1].split(', ')
+        lambda x: x[1:-1].replace("'", "").split(', ') # Handle potential extra quotes/formatting
     )
+    
     forecast_data['dayofweek'] = forecast_data['dt'].dt.dayofweek
     forecast_data['day'] = forecast_data['dt'].dt.day
 
@@ -73,12 +73,36 @@ def get_torch_forecast_data(forecast_data, use_decoder=True):
     ]
     binary_features = ['holiday_flag', 'activity_flag']
     time_features = ['dayofweek', 'day']
+    
+    for col in numerical_features:
+        forecast_data[col] = pd.to_numeric(forecast_data[col], errors='coerce').fillna(0)
+    
+    total_rows = len(forecast_data)
+    if total_rows == 0:
+        raise ValueError("No data available for the selected range.")
+
+    # Calculate series_num dynamically
+    # The original script assumed 50000 series. We must adapt to the actual data.
+    # We assume complete data for each series for the given time range.
+    # The dataframe is expected to be stacked: (Series 1, Time 1..T), (Series 2, Time 1..T), ...
+    # Or sorted by time then series.
+    # Let's check how many unique store_id + product_id combos we have in the input
+    # But wait, the reshaping logic assumes a specific order.
+    # The original logic: forecast_data['hours_sale'].tolist() -> flatten -> reshape(series_num, horizon, 24)
+    # This implies the data is sorted such that each 'series' (store-product) has 'horizon' rows.
+    
+    series_num = total_rows // horizon
 
     hours_sale = np.array(
         forecast_data['hours_sale'].tolist(),
         dtype=float
     )
-    hours_sale = hours_sale.reshape(series_num, horizon, 24)[..., 6:22]
+    
+    try:
+        hours_sale = hours_sale.reshape(series_num, horizon, 24)[..., 6:22]
+    except ValueError as e:
+        print(f"Reshape error: {e}. Data length: {total_rows}, Horizon: {horizon}, Calculated Series: {series_num}")
+        raise
 
     numerical_data = forecast_data[numerical_features].values.astype(float)
     scaler = StandardScaler()
@@ -113,7 +137,6 @@ def get_torch_forecast_data(forecast_data, use_decoder=True):
         axis=-1
     )
     ds = ds.reshape(series_num, horizon * 16, -1)
-    # ds = ds.squeeze(0)
 
     n_features = ds.shape[-1] - 1
 
@@ -121,7 +144,7 @@ def get_torch_forecast_data(forecast_data, use_decoder=True):
     x_dec = torch.tensor(ds[:, window_size:, :n_features], dtype=torch.float32)
     y = torch.tensor(ds[:, window_size:, -1:], dtype=torch.float32)
 
-    return x, x_dec, y
+    return x, x_dec, y, series_num
 
 class Config:
     def __init__(self, use_decoder=True):
@@ -142,6 +165,11 @@ class Config:
 
 
 def main(args):
+    print(f"Loading data from {DATA_PATH}...")
+    if not os.path.exists(DATA_PATH):
+        print(f"Error: Data file not found at {DATA_PATH}")
+        sys.exit(1)
+
     data = pd.read_csv(DATA_PATH)
 
     forecast_data, start_date, final_forecast = get_forecast_data(
@@ -153,7 +181,11 @@ def main(args):
         use_decoder=args.use_decoder,
     )
 
-    x, x_dec, _ = get_torch_forecast_data(forecast_data, use_decoder=args.use_decoder)
+    if forecast_data.empty:
+        print("No data found for the specified date range.")
+        return
+
+    x, x_dec, _, series_num = get_torch_forecast_data(forecast_data, use_decoder=args.use_decoder)
 
     configs = Config(use_decoder=args.use_decoder)
     model = Model(configs)
@@ -161,15 +193,20 @@ def main(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
     
-    current_ckpt_path = os.path.join(CKPT_BASE_PATH, "imputed_decoder", "best_dlinear_model.pth")
+    ckpt_path = os.path.join(CKPT_DIR, "imputed_decoder", "best_dlinear_model.pth")
     if not args.use_decoder:
-        current_ckpt_path = os.path.join(CKPT_BASE_PATH, "imputed_no_decoder", "best_dlinear_model.pth")
-    
-    print(f"Loading checkpoint from: {current_ckpt_path}")
-    state_dict = torch.load(current_ckpt_path, map_location=device)
+        ckpt_path = os.path.join(CKPT_DIR, "imputed_no_decoder", "best_dlinear_model.pth")
+        
+    print(f"Loading model checkpoint from {ckpt_path}...")
+    if not os.path.exists(ckpt_path):
+         print(f"Error: Checkpoint file not found at {ckpt_path}")
+         sys.exit(1)
+
+    state_dict = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(state_dict)
     model.eval()
 
+    print("Running inference...")
     with torch.no_grad():
         x = x.to(device)
         x_dec = x_dec.to(device) if args.use_decoder else None
@@ -179,25 +216,32 @@ def main(args):
             output = output[:, :, -1:]
 
     y_pred_hourly = output.squeeze(-1).cpu().numpy()
-    y_pred_daily = y_pred_hourly.reshape(50000, 16, -1).sum(axis=1)
+    # Reshape based on actual series_num
+    y_pred_daily = y_pred_hourly.reshape(series_num, 16, -1).sum(axis=1)
 
     final_forecast['hourly_forecast'] = list(y_pred_hourly)
     final_forecast['daily_forecast'] = list(y_pred_daily)
 
     str_time = start_date.strftime('%Y%m%d')
-    output_path = OUTPUT_PATH
-    for fname in os.listdir(output_path):
-        if fname.startswith("forecast_data_") and fname.endswith(".csv"):
-            file_path = os.path.join(output_path, fname)
-            os.remove(file_path)
-            print(f"Deleted: {file_path}")
+    
+    # Clean up old forecast files
+    if os.path.exists(OUTPUT_PATH):
+        for fname in os.listdir(OUTPUT_PATH):
+            if fname.startswith("forecast_data_") and fname.endswith(".csv"):
+                file_path = os.path.join(OUTPUT_PATH, fname)
+                try:
+                    os.remove(file_path)
+                    print(f"Deleted: {file_path}")
+                except Exception as e:
+                    print(f"Could not delete {file_path}: {e}")
 
-    final_forecast.to_csv(os.path.join(output_path, f'final_forecast_{str_time}.csv'), index=False)
-    print(f"Saved forecast to final_forecast_{str_time}.csv")
+    output_file = os.path.join(OUTPUT_PATH, f'final_forecast_{str_time}.csv')
+    final_forecast.to_csv(output_file, index=False)
+    print(f"Saved forecast to {output_file}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser("Run DLinear Forecast")
+    parser = argparse.ArgumentParser("Run DLinear Forecast Wrapper")
 
     parser.add_argument("--start_day", type=int, required=True)
     parser.add_argument("--month", type=int, required=True)

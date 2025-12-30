@@ -21,18 +21,29 @@ class DailyResult:
     total_cost: float
 
 class Simulator:
-    def __init__(self, strategy: BaseStrategy, initial_stock: int = 50):
+    def __init__(self, strategy: BaseStrategy, initial_stock: int = 50, config: Dict = None):
         self.strategy = strategy
         self.current_stock = initial_stock
         self.pending_orders = [] # List of tuples (arrival_day, qty)
         self.stock_batches = [] # List of (qty, age_days) for FIFO/Spoilage
+        self.config = config or {}
         
         # Initialize stock batches with initial stock (age 0)
         if initial_stock > 0:
             self.stock_batches.append({'qty': initial_stock, 'age': 0})
 
+    def _get_setting(self, key, default):
+        return self.config.get(key, default)
+
     def run(self, demand_series: List[int], forecast_series: List[float]) -> pd.DataFrame:
         results = []
+        
+        # Resolve settings once
+        LEAD_TIME = self._get_setting('LEAD_TIME', settings.LEAD_TIME)
+        SHELF_LIFE = self._get_setting('SHELF_LIFE', settings.SHELF_LIFE)
+        COST = self._get_setting('COST', settings.COST)
+        HOLDING_COST = self._get_setting('HOLDING_COST', settings.HOLDING_COST)
+        SHORTAGE_COST = self._get_setting('SHORTAGE_COST', settings.SHORTAGE_COST)
         
         for day, (demand, forecast) in enumerate(zip(demand_series, forecast_series)):
             # 1. Receive Orders
@@ -53,22 +64,18 @@ class Simulator:
             
             # 2. Determine Order (Strategy)
             # Strategy sees stock_start (available now) and pending orders
+            # Note: Strategies might still access global settings if not updated. 
+            # ideally strategies should also receive config, but for now assuming they rely on passed args or global.
             pending_qty = sum(qty for _, qty in self.pending_orders)
             order_qty = self.strategy.calculate_order_qty(stock_start, forecast, pending_qty)
             
             if order_qty > 0:
-                self.pending_orders.append((day + settings.LEAD_TIME, order_qty))
+                self.pending_orders.append((day + LEAD_TIME, order_qty))
                 
             # 3. Fulfill Demand (FIFO)
             qty_sold = 0
             shortage = 0
             remaining_demand = demand
-            
-            # Sort batches by age (oldest first - FIFO) assuming indices represent order of arrival/creation
-            # Actually we need to handle age increment, so we just iterate.
-            # Assuming stock_batches are appended, older ones are at the beginning? 
-            # Not necessarily if we insert, but we only append.
-            # Let's ensure we consume from index 0 (oldest).
             
             temp_batches = []
             for batch in self.stock_batches:
@@ -91,7 +98,7 @@ class Simulator:
             surviving_batches = []
             for batch in self.stock_batches:
                 batch['age'] += 1
-                if batch['age'] > settings.SHELF_LIFE:
+                if batch['age'] > SHELF_LIFE:
                     spoiled += batch['qty']
                 else:
                     surviving_batches.append(batch)
@@ -100,10 +107,10 @@ class Simulator:
             stock_end = sum(b['qty'] for b in self.stock_batches)
             
             # 5. Calculate Costs
-            cost_purchase = order_qty * settings.COST # Paid when ordered (simplified)
-            cost_holding = stock_end * settings.HOLDING_COST
-            cost_shortage = shortage * settings.SHORTAGE_COST
-            cost_spoilage = spoiled * settings.COST # Lost cost of goods
+            cost_purchase = order_qty * COST # Paid when ordered (simplified)
+            cost_holding = stock_end * HOLDING_COST
+            cost_shortage = shortage * SHORTAGE_COST
+            cost_spoilage = spoiled * COST # Lost cost of goods
             
             total_cost = cost_purchase + cost_holding + cost_shortage + cost_spoilage
             

@@ -23,9 +23,20 @@ def calculate_optimal_supply(
 
     value_cap = min(budget, max_inventory)
 
-    from_date, to_date, bounds = _store.resolve_time_range_by_max_dt(
+    # FIX: resolve_time_range_by_max_dt returns a dict, not tuple
+    resolved = _store.resolve_time_range_by_max_dt(
         time_range=time_range, store_id=store_id, product_ids=product_ids
     )
+    from_date = resolved.get("from_date")
+    to_date = resolved.get("to_date")
+
+    # Fetch bounds separately
+    b = _store.get_bounds(store_id=store_id, product_ids=product_ids)
+    bounds = {
+        "min_dt": b.min_dt,
+        "max_dt": b.max_dt,
+        "available_days": b.available_days
+    }
 
     if not from_date or not to_date:
         return {

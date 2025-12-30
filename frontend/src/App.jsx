@@ -3,8 +3,9 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
+
 // Layout
-import Header from './components/layout/Header';   // ❗ BỎ .tsx
+import Header from './components/layout/Header';
 import Sidebar from './components/layout/Sidebar';
 import Footer from './components/layout/Footer';
 
@@ -15,6 +16,7 @@ import Forecasting from './pages/Forecasting';
 import Analytics from './pages/Analytics';
 import Settings from './pages/Settings';
 import DemandPlanning from './pages/DemandPlanning';
+import OptimizationDashboard from './pages/OptimizationDashboard';
 
 // Context
 import { AppProvider } from './context/AppContext';
@@ -35,39 +37,31 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AppProvider>
-        <Router>
-          <DashboardProvider>
-          <div className="app">
-            <Header />
-            <div className="app-container">
+        <DashboardProvider>
+          <Router>
+            <div className="flex h-screen bg-gray-100">
               <Sidebar />
-              <main className="main-content">
-                <Routes>
-                  <Route path="/" element={<Navigate to="/dashboard" replace />} />
-                  <Route path="/dashboard" element={<Dashboard />} />
-                  <Route path="/products" element={<ProductManagement />} />
-                  <Route path="/forecasting" element={<Forecasting />} />
-                  <Route path="/analytics" element={<Analytics />} />
-                  <Route path="/planning" element={<DemandPlanning />} />
-                  <Route path="/settings" element={<Settings />} />
-                </Routes>
-              </main>
+              <div className="flex-1 flex flex-col overflow-hidden">
+                <Header />
+                <main className="flex-1 overflow-x-hidden overflow-y-auto bg-gray-100 p-4">
+                  <Routes>
+                    <Route path="/" element={<Dashboard />} />
+                    <Route path="/products" element={<ProductManagement />} />
+                    <Route path="/forecasting" element={<Forecasting />} />
+                    <Route path="/analytics" element={<Analytics />} />
+                    <Route path="/planning" element={<DemandPlanning />} />
+                    <Route path="/optimization" element={<OptimizationDashboard />} />
+                    <Route path="/settings" element={<Settings />} />
+                    {/* Fallback route */}
+                    <Route path="*" element={<Navigate to="/" replace />} />
+                  </Routes>
+                </main>
+                <Footer />
+              </div>
             </div>
-            <Footer />
-            <ToastContainer
-              position="top-right"
-              autoClose={3000}
-              hideProgressBar={false}
-              newestOnTop
-              closeOnClick
-              rtl={false}
-              pauseOnFocusLoss
-              draggable
-              pauseOnHover
-            />
-          </div>
-          </DashboardProvider>
-        </Router>
+            <ToastContainer position="top-right" autoClose={3000} />
+          </Router>
+        </DashboardProvider>
       </AppProvider>
     </QueryClientProvider>
   );
